@@ -7,15 +7,27 @@ class BaseDataset(Dataset):
         with open(data_path, 'r', encoding='utf-8') as f:
             raw_data = json.load(f)
         self.data = []
+        
+        # --- SỬA LỖI TẠI ĐÂY ---
         for item in raw_data:
-            # Lấy câu trả lời đầu tiên làm chuẩn
-            if item['answers']['text']:
-                self.data.append({
-                    'context': item['context'],
-                    'question': item['question'],
-                    'answer_text': item['answers']['text'][0],
-                    'answer_start': item['answers']['answer_start'][0]
-                })
+            # 1. Kiểm tra nếu 'answers' bị None
+            answers = item.get('answers')
+            if answers is None:
+                continue
+            
+            # 2. Kiểm tra nếu 'text' bên trong answers rỗng
+            if 'text' not in answers or len(answers['text']) == 0:
+                continue
+
+            # Nếu dữ liệu hợp lệ thì mới thêm vào danh sách
+            self.data.append({
+                'context': item['context'],
+                'question': item['question'],
+                'answer_text': answers['text'][0],          # Lấy câu trả lời đầu tiên
+                'answer_start': answers['answer_start'][0]  # Lấy vị trí đầu tiên
+            })
+        
+        print(f"Loaded {len(self.data)} samples from {data_path}")
 
     def __len__(self):
         return len(self.data)
@@ -35,7 +47,7 @@ class AEDataset(BaseDataset):
         start_char = item['answer_start']
         end_char = start_char + len(item['answer_text'])
 
-        # Tokenize context có trả về offset mapping để biết token nào ứng với ký tự nào
+        # Tokenize context
         tokenized_inputs = self.tokenizer(
             context,
             max_length=self.max_len,
@@ -49,18 +61,16 @@ class AEDataset(BaseDataset):
         attention_mask = tokenized_inputs["attention_mask"].squeeze()
         offset_mapping = tokenized_inputs["offset_mapping"].squeeze().tolist()
         
-        # Tạo nhãn: 0 (O), 1 (B - Bắt đầu), 2 (I - Bên trong)
         labels = [0] * len(input_ids)
         
         for i, (start, end) in enumerate(offset_mapping):
-            if start == 0 and end == 0: continue # Skip special tokens like CLS/SEP
+            if start == 0 and end == 0: continue 
             
-            # Kiểm tra xem token này có nằm trọn trong vùng answer không
             if start >= start_char and end <= end_char:
                 if start == start_char:
-                    labels[i] = 1 # B-Answer
+                    labels[i] = 1 # B-ANS
                 else:
-                    labels[i] = 2 # I-Answer
+                    labels[i] = 2 # I-ANS
                     
         return {
             "input_ids": input_ids,
@@ -81,8 +91,6 @@ class QGDataset(BaseDataset):
         ans_text = item['answer_text']
         ans_start = item['answer_start']
         
-        # Đánh dấu câu trả lời bằng thẻ <hl>
-        # Cần cẩn thận cắt chuỗi chính xác
         prefix = context[:ans_start]
         suffix = context[ans_start + len(ans_text):]
         input_text = f"{prefix}<hl> {ans_text} <hl>{suffix}"
@@ -107,5 +115,5 @@ class QGDataset(BaseDataset):
         return {
             "input_ids": inputs.input_ids.squeeze(),
             "attention_mask": inputs.attention_mask.squeeze(),
-            "labels": targets.input_ids.squeeze() # labels cho model tính loss
+            "labels": targets.input_ids.squeeze()
         }
