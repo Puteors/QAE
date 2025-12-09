@@ -1,0 +1,11 @@
+torch
+transformers
+datasets
+evaluate
+sacrebleu
+bert_score
+accelerate
+scikit-learn
+sentencepiece
+protobuf
+seqeval
