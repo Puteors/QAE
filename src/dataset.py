@@ -8,25 +8,17 @@ class BaseDataset(Dataset):
             raw_data = json.load(f)
         self.data = []
         
-        # --- SỬA LỖI TẠI ĐÂY ---
         for item in raw_data:
-            # 1. Kiểm tra nếu 'answers' bị None
             answers = item.get('answers')
-            if answers is None:
-                continue
-            
-            # 2. Kiểm tra nếu 'text' bên trong answers rỗng
-            if 'text' not in answers or len(answers['text']) == 0:
-                continue
+            if answers is None: continue
+            if 'text' not in answers or len(answers['text']) == 0: continue
 
-            # Nếu dữ liệu hợp lệ thì mới thêm vào danh sách
             self.data.append({
                 'context': item['context'],
                 'question': item['question'],
-                'answer_text': answers['text'][0],          # Lấy câu trả lời đầu tiên
-                'answer_start': answers['answer_start'][0]  # Lấy vị trí đầu tiên
+                'answer_text': answers['text'][0],
+                'answer_start': answers['answer_start'][0]
             })
-        
         print(f"Loaded {len(self.data)} samples from {data_path}")
 
     def __len__(self):
@@ -63,15 +55,26 @@ class AEDataset(BaseDataset):
         
         labels = [0] * len(input_ids)
         
+        # --- LOGIC GÁN NHÃN MỚI (OVERLAP) ---
+        # Logic cũ quá chặt, nếu token dính dấu cách hoặc bị cắt đôi sẽ bị bỏ qua.
+        # Logic mới: Chỉ cần token có giao thoa với vùng câu trả lời là tính.
+        
         for i, (start, end) in enumerate(offset_mapping):
             if start == 0 and end == 0: continue 
             
-            if start >= start_char and end <= end_char:
-                if start == start_char:
-                    labels[i] = 1 # B-ANS
+            # Kiểm tra giao thoa (Overlap)
+            # Token nằm trong vùng answer nếu: điểm đầu token < điểm cuối answer VÀ điểm cuối token > điểm đầu answer
+            if start < end_char and end > start_char:
+                # Nếu token bắt đầu gần vị trí bắt đầu của answer -> B-ANS
+                # Lưu ý: start có thể nhỏ hơn start_char (do token chứa dấu cách phía trước)
+                if start <= start_char and end > start_char: 
+                     labels[i] = 1 # B-ANS
+                elif start > start_char:
+                     labels[i] = 2 # I-ANS
                 else:
-                    labels[i] = 2 # I-ANS
-                    
+                     labels[i] = 2 # Trường hợp còn lại cho vào I
+        # -------------------------------------
+
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,

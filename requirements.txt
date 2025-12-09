@@ -9,3 +9,4 @@ scikit-learn
 sentencepiece
 protobuf
 seqeval
+rouge_score
