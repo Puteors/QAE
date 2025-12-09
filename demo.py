@@ -20,7 +20,7 @@ def main():
     paragraph = """
     Hồ Chí Minh (19 tháng 5 năm 1890 – 2 tháng 9 năm 1969) là một nhà cách mạng và chính khách người Việt Nam. 
     Ông là người sáng lập Đảng Cộng sản Việt Nam, từng là Chủ tịch nước Việt Nam Dân chủ Cộng hòa từ năm 1945 đến năm 1969. 
-    Tại Đại hội lần thứ II của Đảng (1951), ông được bầu làm Chủ tịch Ban Chấp hành Trung ương Đảng Lao động Việt Nam.
+    Tại Đại hội lần thứ II của Đảng (1951), ông được bầu làm Chủ tịch Ban Chấp hành Trung ương Đảng Lao động Việt Nam. 
     """
 
     print(f"\nĐoạn văn đầu vào:\n{paragraph.strip()}\n")
