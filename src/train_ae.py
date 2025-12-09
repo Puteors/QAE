@@ -46,9 +46,12 @@ def train_ae_model(train_path, val_path, test_path, output_dir="./outputs/ae_mod
         save_total_limit=2,             # Lưu 2 model tốt nhất
         load_best_model_at_end=True,    # Load model tốt nhất dựa trên Validation Loss
         metric_for_best_model="loss",
+
         learning_rate=2e-5,
-        per_device_train_batch_size=8,
-        per_device_eval_batch_size=8,
+        per_device_train_batch_size=2,
+        per_device_eval_batch_size=2,
+        gradient_accumulation_steps=4,
+    
         num_train_epochs=5,
         weight_decay=0.01,
         logging_dir=f"{output_dir}/logs",

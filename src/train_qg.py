@@ -37,9 +37,13 @@ def train_qg_model(train_path, val_path, test_path, output_dir="./outputs/qg_mod
         save_total_limit=2,
         load_best_model_at_end=True,    # Load model validation loss thấp nhất
         metric_for_best_model="loss",   
+
         learning_rate=3e-5,
-        per_device_train_batch_size=4,
-        per_device_eval_batch_size=4,
+        per_device_train_batch_size=2,      # GIẢM TỪ 4 XUỐNG 2
+        per_device_eval_batch_size=2,       # GIẢM TỪ 4 XUỐNG 2
+        gradient_accumulation_steps=2,      # Tích lũy 2 bước (2x2 = 4 hiệu quả)
+        fp16=torch.cuda.is_available(),     # BẬT Mixed Precision
+
         num_train_epochs=10,
         weight_decay=0.01,
         predict_with_generate=True,     # Để tính BLEU/BERTScore
