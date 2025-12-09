@@ -42,7 +42,6 @@ def train_qg_model(train_path, val_path, test_path, output_dir="./outputs/qg_mod
         per_device_train_batch_size=2,      # GIẢM TỪ 4 XUỐNG 2
         per_device_eval_batch_size=2,       # GIẢM TỪ 4 XUỐNG 2
         gradient_accumulation_steps=2,      # Tích lũy 2 bước (2x2 = 4 hiệu quả)
-        fp16=torch.cuda.is_available(),     # BẬT Mixed Precision
 
         num_train_epochs=10,
         weight_decay=0.01,
