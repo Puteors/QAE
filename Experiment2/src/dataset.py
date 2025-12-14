@@ -1,11 +1,10 @@
 import json
-import torch
 from torch.utils.data import Dataset
 from collections import defaultdict
 from src.config import Config
 
 class QAGenDataset(Dataset):
-    def __init__(self, json_path, tokenizer, split="train"):
+    def __init__(self, json_path, tokenizer):
         self.tokenizer = tokenizer
         self.data = self.load_and_group_data(json_path)
         
@@ -13,31 +12,33 @@ class QAGenDataset(Dataset):
         with open(path, 'r', encoding='utf-8') as f:
             raw_data = json.load(f)
         
-        # Gom nhóm theo context
-        grouped_data = defaultdict(list)
+        # 1. Gom nhóm các câu hỏi cùng context
+        grouped = defaultdict(list)
         for item in raw_data:
             context = item['context']
-            question = item['question']
+            q = item['question']
             
-            # Xử lý lấy câu trả lời
-            answer_text = ""
-            if not item['is_impossible']:
-                if item['answers']['text']:
-                    answer_text = item['answers']['text'][0]
-            elif item.get('plausible_answers'):
-                answer_text = item['plausible_answers']['text'][0]
+            # Lấy câu trả lời (ưu tiên text thật, hoặc plausible nếu impossible=True)
+            a = ""
+            if not item['is_impossible'] and item['answers']['text']:
+                a = item['answers']['text'][0]
+            elif item['is_impossible'] and item.get('plausible_answers'):
+                a = item['plausible_answers']['text'][0]
             
-            # Chỉ thêm nếu có câu trả lời
-            if answer_text:
-                # Format: "hỏi: ... đáp: ..."
-                pair = f"hỏi: {question} đáp: {answer_text}"
-                grouped_data[context].append(pair)
+            if a: # Chỉ lấy nếu có câu trả lời
+                grouped[context].append((q, a))
         
-        # Chuyển về list các mẫu training
+        # 2. Tạo format training
         dataset = []
-        for context, qa_pairs in grouped_data.items():
-            # Nối các cặp Q&A bằng dấu gạch đứng hoặc token đặc biệt
-            target_text = Config.SEP_TOKEN.join(qa_pairs)
+        for context, qa_list in grouped.items():
+            # Tạo chuỗi target: "question: A answer: B [SEP] question: C answer: D"
+            pair_strings = []
+            for q, a in qa_list:
+                pair_str = f"{Config.Q_TAG}{q}{Config.A_TAG}{a}"
+                pair_strings.append(pair_str)
+            
+            target_text = Config.PAIR_SEP.join(pair_strings)
+            
             dataset.append({
                 "context": context,
                 "target": target_text
@@ -53,25 +54,25 @@ class QAGenDataset(Dataset):
         target_text = item['target']
 
         # Tokenize Input
+        # BỎ 'return_tensors="pt"' đi
         inputs = self.tokenizer(
             input_text,
             max_length=Config.MAX_SOURCE_LENGTH,
             padding="max_length",
             truncation=True,
-            return_tensors="pt"
         )
 
-        # Tokenize Output (Target)
+        # Tokenize Output
+        # BỎ 'return_tensors="pt"' đi
         targets = self.tokenizer(
             target_text,
             max_length=Config.MAX_TARGET_LENGTH,
             padding="max_length",
             truncation=True,
-            return_tensors="pt"
         )
 
         return {
-            "input_ids": inputs.input_ids.squeeze(),
-            "attention_mask": inputs.attention_mask.squeeze(),
-            "labels": targets.input_ids.squeeze()
+            "input_ids": inputs.input_ids,          # Đây là List[int]
+            "attention_mask": inputs.attention_mask,# Đây là List[int]
+            "labels": targets.input_ids             # Đây là List[int]
         }
