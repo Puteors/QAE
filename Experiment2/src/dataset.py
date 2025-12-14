@@ -1,3 +1,4 @@
+# src/dataset.py
 import json
 from torch.utils.data import Dataset
 from collections import defaultdict
@@ -12,26 +13,29 @@ class QAGenDataset(Dataset):
         with open(path, 'r', encoding='utf-8') as f:
             raw_data = json.load(f)
         
-        # 1. Gom nhóm các câu hỏi cùng context
         grouped = defaultdict(list)
         for item in raw_data:
-            context = item['context']
-            q = item['question']
+            # 1. Bỏ qua các câu hỏi "gài bẫy" (không có câu trả lời thật)
+            if item.get('is_impossible', False):
+                continue
+
+            # 2. Xử lý sạch văn bản (Cleaning)
+            # Thay thế các dấu gạch ngang lạ bằng dấu trừ bình thường
+            context = item['context'].replace('–', '-').replace('—', '-')
+            question = item['question'].replace('–', '-').replace('—', '-')
             
-            # Lấy câu trả lời (ưu tiên text thật, hoặc plausible nếu impossible=True)
-            a = ""
-            if not item['is_impossible'] and item['answers']['text']:
-                a = item['answers']['text'][0]
-            elif item['is_impossible'] and item.get('plausible_answers'):
-                a = item['plausible_answers']['text'][0]
+            # Lấy câu trả lời
+            answer_text = ""
+            if item['answers']['text']:
+                answer_text = item['answers']['text'][0]
+                answer_text = answer_text.replace('–', '-').replace('—', '-')
             
-            if a: # Chỉ lấy nếu có câu trả lời
-                grouped[context].append((q, a))
+            if answer_text:
+                grouped[context].append((question, answer_text))
         
-        # 2. Tạo format training
+        # Tạo dataset
         dataset = []
         for context, qa_list in grouped.items():
-            # Tạo chuỗi target: "question: A answer: B [SEP] question: C answer: D"
             pair_strings = []
             for q, a in qa_list:
                 pair_str = f"{Config.Q_TAG}{q}{Config.A_TAG}{a}"
@@ -53,8 +57,7 @@ class QAGenDataset(Dataset):
         input_text = Config.QA_PREFIX + item['context']
         target_text = item['target']
 
-        # Tokenize Input
-        # BỎ 'return_tensors="pt"' đi
+        # Tokenize (trả về list int, không dùng pt tensor ở đây để tránh warning)
         inputs = self.tokenizer(
             input_text,
             max_length=Config.MAX_SOURCE_LENGTH,
@@ -62,8 +65,6 @@ class QAGenDataset(Dataset):
             truncation=True,
         )
 
-        # Tokenize Output
-        # BỎ 'return_tensors="pt"' đi
         targets = self.tokenizer(
             target_text,
             max_length=Config.MAX_TARGET_LENGTH,
@@ -71,9 +72,8 @@ class QAGenDataset(Dataset):
             truncation=True,
         )
 
-        # Trả về List thường, không dùng .squeeze() nữa vì nó là List rồi
         return {
-            "input_ids": inputs.input_ids,          # Đây là List[int]
-            "attention_mask": inputs.attention_mask,# Đây là List[int]
-            "labels": targets.input_ids             # Đây là List[int]
+            "input_ids": inputs.input_ids,
+            "attention_mask": inputs.attention_mask,
+            "labels": targets.input_ids
         }
