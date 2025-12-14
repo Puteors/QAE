@@ -1,11 +1,11 @@
-# src/dataset.py
 import json
+import torch
 from torch.utils.data import Dataset
 from collections import defaultdict
 from src.config import Config
 
 class QAGenDataset(Dataset):
-    def __init__(self, json_path, tokenizer):
+    def __init__(self, json_path, tokenizer, split="train"):
         self.tokenizer = tokenizer
         self.data = self.load_and_group_data(json_path)
         
@@ -13,43 +13,31 @@ class QAGenDataset(Dataset):
         with open(path, 'r', encoding='utf-8') as f:
             raw_data = json.load(f)
         
-        grouped = defaultdict(list)
+        # Gom nhóm theo context
+        grouped_data = defaultdict(list)
         for item in raw_data:
-            # 1. Bỏ qua các câu hỏi "gài bẫy" (không có câu trả lời thật)
-            # Dòng này giúp loại bỏ mẫu dữ liệu số 4 (is_impossible=True)
-            if item.get('is_impossible', False):
-                continue
-
-            # 2. Xử lý sạch văn bản (Cleaning)
-            context = item['context'].replace('–', '-').replace('—', '-')
-            question = item['question'].replace('–', '-').replace('—', '-')
+            context = item['context']
+            question = item['question']
             
-            # 3. Lấy câu trả lời AN TOÀN (Sửa lỗi crash tại đây)
+            # Xử lý lấy câu trả lời
             answer_text = ""
-            answers = item.get('answers') # Lấy object answers ra
+            if not item['is_impossible']:
+                if item['answers']['text']:
+                    answer_text = item['answers']['text'][0]
+            elif item.get('plausible_answers'):
+                answer_text = item['plausible_answers']['text'][0]
             
-            # Kiểm tra kỹ: 
-            # - answers phải khác None (để tránh lỗi NoneType)
-            # - answers phải có key 'text'
-            # - list answers['text'] phải có phần tử (len > 0)
-            if answers and answers.get('text') and len(answers['text']) > 0:
-                raw_ans = answers['text'][0]
-                answer_text = raw_ans.replace('–', '-').replace('—', '-')
-            
-            # Chỉ thêm vào nếu tìm được câu trả lời hợp lệ
+            # Chỉ thêm nếu có câu trả lời
             if answer_text:
-                grouped[context].append((question, answer_text))
+                # Format: "hỏi: ... đáp: ..."
+                pair = f"hỏi: {question} đáp: {answer_text}"
+                grouped_data[context].append(pair)
         
-        # Tạo dataset định dạng chuỗi
+        # Chuyển về list các mẫu training
         dataset = []
-        for context, qa_list in grouped.items():
-            pair_strings = []
-            for q, a in qa_list:
-                pair_str = f"{Config.Q_TAG}{q}{Config.A_TAG}{a}"
-                pair_strings.append(pair_str)
-            
-            target_text = Config.PAIR_SEP.join(pair_strings)
-            
+        for context, qa_pairs in grouped_data.items():
+            # Nối các cặp Q&A bằng dấu gạch đứng hoặc token đặc biệt
+            target_text = Config.SEP_TOKEN.join(qa_pairs)
             dataset.append({
                 "context": context,
                 "target": target_text
@@ -65,12 +53,12 @@ class QAGenDataset(Dataset):
         target_text = item['target']
 
         # Tokenize Input
-        # Lưu ý: Không dùng return_tensors="pt" ở đây để tránh warning DataCollator
         inputs = self.tokenizer(
             input_text,
             max_length=Config.MAX_SOURCE_LENGTH,
             padding="max_length",
             truncation=True,
+            return_tensors="pt"
         )
 
         # Tokenize Output (Target)
@@ -79,10 +67,11 @@ class QAGenDataset(Dataset):
             max_length=Config.MAX_TARGET_LENGTH,
             padding="max_length",
             truncation=True,
+            return_tensors="pt"
         )
 
         return {
-            "input_ids": inputs.input_ids,          # Trả về list int
-            "attention_mask": inputs.attention_mask,# Trả về list int
-            "labels": targets.input_ids             # Trả về list int
+            "input_ids": inputs.input_ids.squeeze(),
+            "attention_mask": inputs.attention_mask.squeeze(),
+            "labels": targets.input_ids.squeeze()
         }
