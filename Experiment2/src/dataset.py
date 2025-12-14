@@ -16,24 +16,31 @@ class QAGenDataset(Dataset):
         grouped = defaultdict(list)
         for item in raw_data:
             # 1. Bỏ qua các câu hỏi "gài bẫy" (không có câu trả lời thật)
+            # Dòng này giúp loại bỏ mẫu dữ liệu số 4 (is_impossible=True)
             if item.get('is_impossible', False):
                 continue
 
             # 2. Xử lý sạch văn bản (Cleaning)
-            # Thay thế các dấu gạch ngang lạ bằng dấu trừ bình thường
             context = item['context'].replace('–', '-').replace('—', '-')
             question = item['question'].replace('–', '-').replace('—', '-')
             
-            # Lấy câu trả lời
+            # 3. Lấy câu trả lời AN TOÀN (Sửa lỗi crash tại đây)
             answer_text = ""
-            if item['answers']['text']:
-                answer_text = item['answers']['text'][0]
-                answer_text = answer_text.replace('–', '-').replace('—', '-')
+            answers = item.get('answers') # Lấy object answers ra
             
+            # Kiểm tra kỹ: 
+            # - answers phải khác None (để tránh lỗi NoneType)
+            # - answers phải có key 'text'
+            # - list answers['text'] phải có phần tử (len > 0)
+            if answers and answers.get('text') and len(answers['text']) > 0:
+                raw_ans = answers['text'][0]
+                answer_text = raw_ans.replace('–', '-').replace('—', '-')
+            
+            # Chỉ thêm vào nếu tìm được câu trả lời hợp lệ
             if answer_text:
                 grouped[context].append((question, answer_text))
         
-        # Tạo dataset
+        # Tạo dataset định dạng chuỗi
         dataset = []
         for context, qa_list in grouped.items():
             pair_strings = []
@@ -57,7 +64,8 @@ class QAGenDataset(Dataset):
         input_text = Config.QA_PREFIX + item['context']
         target_text = item['target']
 
-        # Tokenize (trả về list int, không dùng pt tensor ở đây để tránh warning)
+        # Tokenize Input
+        # Lưu ý: Không dùng return_tensors="pt" ở đây để tránh warning DataCollator
         inputs = self.tokenizer(
             input_text,
             max_length=Config.MAX_SOURCE_LENGTH,
@@ -65,6 +73,7 @@ class QAGenDataset(Dataset):
             truncation=True,
         )
 
+        # Tokenize Output (Target)
         targets = self.tokenizer(
             target_text,
             max_length=Config.MAX_TARGET_LENGTH,
@@ -73,7 +82,7 @@ class QAGenDataset(Dataset):
         )
 
         return {
-            "input_ids": inputs.input_ids,
-            "attention_mask": inputs.attention_mask,
-            "labels": targets.input_ids
+            "input_ids": inputs.input_ids,          # Trả về list int
+            "attention_mask": inputs.attention_mask,# Trả về list int
+            "labels": targets.input_ids             # Trả về list int
         }
