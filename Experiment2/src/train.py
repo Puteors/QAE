@@ -32,19 +32,30 @@ def main():
     # 4. Training Arguments
     training_args = Seq2SeqTrainingArguments(
         output_dir=Config.OUTPUT_DIR,
-        evaluation_strategy="epoch",
-        save_strategy="epoch",
+        
+        # --- CẤU HÌNH STEPS ---
+        eval_strategy="steps",    # Đánh giá theo steps thay vì epoch
+        eval_steps=Config.EVAL_STEPS,   # Số bước mỗi lần đánh giá (vd: 100)
+        
+        save_strategy="steps",          # Lưu model theo steps (phải khớp với eval)
+        save_steps=Config.EVAL_STEPS,   # Số bước mỗi lần lưu
+        
+        # --- CẤU HÌNH BEST MODEL ---
+        load_best_model_at_end=True,    # Load lại model ngon nhất khi train xong
+        metric_for_best_model="rougeL", # Chọn model có điểm ROUGE-L cao nhất (thay vì Loss thấp nhất)
+        greater_is_better=True,         # ROUGE càng cao càng tốt
+        save_total_limit=Config.SAVE_TOTAL_LIMIT, # Chỉ giữ 2 model tốt nhất
+        
+        # --- CÁC THAM SỐ KHÁC ---
         learning_rate=Config.LEARNING_RATE,
         per_device_train_batch_size=Config.BATCH_SIZE,
         per_device_eval_batch_size=Config.BATCH_SIZE,
         weight_decay=0.01,
-        save_total_limit=2,
         num_train_epochs=Config.EPOCHS,
-        predict_with_generate=True, # Bắt buộc True để tính ROUGE khi eval
-        fp16=True, # Bật nếu dùng GPU
+        predict_with_generate=True,     # BẮT BUỘC để tính được ROUGE
+        fp16=True,                      # Dùng GPU thì để True
         logging_dir='./logs',
-        logging_steps=100,
-        load_best_model_at_end=True,
+        logging_steps=50,               # In log loss mỗi 50 bước
     )
 
     # 5. Initialize Trainer
