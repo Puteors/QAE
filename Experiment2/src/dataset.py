@@ -53,24 +53,27 @@ class QAGenDataset(Dataset):
         input_text = Config.QA_PREFIX + item['context']
         target_text = item['target']
 
+        # Tokenize Input
+        # BỎ 'return_tensors="pt"' đi
         inputs = self.tokenizer(
             input_text,
             max_length=Config.MAX_SOURCE_LENGTH,
             padding="max_length",
             truncation=True,
-            return_tensors="pt"
         )
 
+        # Tokenize Output
+        # BỎ 'return_tensors="pt"' đi
         targets = self.tokenizer(
             target_text,
             max_length=Config.MAX_TARGET_LENGTH,
             padding="max_length",
             truncation=True,
-            return_tensors="pt"
         )
 
+        # Trả về List thường, không dùng .squeeze() nữa vì nó là List rồi
         return {
-            "input_ids": inputs.input_ids.squeeze(),
-            "attention_mask": inputs.attention_mask.squeeze(),
-            "labels": targets.input_ids.squeeze()
+            "input_ids": inputs.input_ids,          # Đây là List[int]
+            "attention_mask": inputs.attention_mask,# Đây là List[int]
+            "labels": targets.input_ids             # Đây là List[int]
         }
