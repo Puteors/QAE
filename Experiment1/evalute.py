@@ -1,37 +1,43 @@
 import json
 import torch
-import re
 from tqdm import tqdm
 from collections import defaultdict
-from transformers import AutoTokenizer, T5ForConditionalGeneration
+from transformers import AutoTokenizer
+from peft import AutoPeftModelForCausalLM # Dùng thư viện PEFT cho Qwen LoRA
 import evaluate
 from src.config import Config
 
 # --- CẤU HÌNH ---
-MODEL_PATH = "./results/final_model"
+# Đường dẫn tới thư mục chứa adapter đã train (vd: ./results_qwen/final_model)
+MODEL_PATH = "./results_qwen/checkpoint-100" 
 TEST_FILE = "./data/test.json"
-OUTPUT_FILE = "question_rouge_results.json"
+OUTPUT_FILE = "question_rouge_results_qwen.json"
 # ----------------
 
 def parse_questions_only(text_output):
     """
-    Hàm này chỉ trích xuất phần nội dung câu hỏi từ output của model.
-    Input: "question: Biển nào giáp Cali? answer: TBD [SEP] question: Sacramento ở đâu? answer: ..."
-    Output: "Biển nào giáp Cali? Sacramento ở đâu?"
+    Trích xuất câu hỏi từ chuỗi output raw.
+    Input: "question: Q1? answer: A1 [SEP] question: Q2? answer: A2"
+    Output: "Q1? Q2?"
     """
     questions = []
-    # Tách các cặp bằng [SEP]
-    pairs = text_output.split(Config.PAIR_SEP.strip())
+    # Tách các cặp bằng separator
+    sep = Config.PAIR_SEP.strip()
+    pairs = text_output.split(sep)
+    
+    q_tag = Config.Q_TAG.strip() # "question:"
+    a_tag = Config.A_TAG.strip() # "answer:"
     
     for pair in pairs:
-        # Tìm vị trí tag 'question:' và 'answer:'
-        q_start = pair.find(Config.Q_TAG.strip())
-        a_start = pair.find(Config.A_TAG.strip())
+        pair = pair.strip()
+        # Tìm vị trí tag question và answer
+        # Lưu ý: Qwen có thể sinh thêm khoảng trắng, nên dùng find linh hoạt
+        q_start = pair.find(q_tag)
+        a_start = pair.find(a_tag)
         
-        if q_start != -1 and a_start != -1:
+        if q_start != -1 and a_start != -1 and q_start < a_start:
             # Cắt lấy phần text ở giữa question và answer
-            # + len(...) để bỏ qua chữ "question: "
-            q_text = pair[q_start + len(Config.Q_TAG.strip()): a_start].strip()
+            q_text = pair[q_start + len(q_tag): a_start].strip()
             if q_text:
                 questions.append(q_text)
                 
@@ -39,91 +45,109 @@ def parse_questions_only(text_output):
     return " ".join(questions)
 
 def main():
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Sử dụng thiết bị: {device}")
-
     # 1. Load Metrics & Model
-    print("Đang tải ROUGE và Model...")
+    print("Đang tải ROUGE...")
     rouge = evaluate.load("rouge")
-    tokenizer = AutoTokenizer.from_pretrained(Config.MODEL_NAME)
-    model = T5ForConditionalGeneration.from_pretrained(MODEL_PATH)
-    model.to(device)
+
+    print(f"Đang tải Model Qwen từ: {MODEL_PATH}")
+    
+    # Load Tokenizer (từ base model name trong config để đảm bảo đúng)
+    tokenizer = AutoTokenizer.from_pretrained(Config.MODEL_NAME, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Load Model (Qwen + LoRA)
+    # device_map="auto" sẽ tự động dùng GPU nếu có
+    model = AutoPeftModelForCausalLM.from_pretrained(
+        MODEL_PATH,
+        device_map="auto",
+        torch_dtype="auto",
+        trust_remote_code=True
+    )
     model.eval()
 
-    # 2. Load và Gom nhóm dữ liệu Test (Group by Context)
-    print("Đang xử lý dữ liệu test...")
+    # 2. Load và Gom nhóm dữ liệu Test
+    print(f"Đang đọc dữ liệu từ: {TEST_FILE}")
     with open(TEST_FILE, 'r', encoding='utf-8') as f:
         raw_data = json.load(f)
 
-    # Dictionary: Key = Context, Value = List các câu hỏi thật (Ground Truth)
+    # Dictionary: Key = Context, Value = List các câu hỏi thật
     context_map = defaultdict(list)
-    
     for item in raw_data:
         ctx = item.get('context', "").strip()
         quest = item.get('question', "").strip()
-        
-        # Chỉ lấy nếu có context và question (bỏ qua answers)
         if ctx and quest:
             context_map[ctx].append(quest)
 
     print(f"Tổng số đoạn văn (Context) cần đánh giá: {len(context_map)}")
 
     # 3. Chạy đánh giá
-    predictions = [] # List các chuỗi câu hỏi model sinh ra
-    references = []  # List các chuỗi câu hỏi thật
-    
-    details = [] # Lưu chi tiết để kiểm tra
+    predictions = []
+    references = []
+    details = []
 
-    print("Bắt đầu sinh câu hỏi và so sánh...")
+    print("Bắt đầu sinh câu hỏi...")
+    
+    # Duyệt qua từng context
     for context, real_questions_list in tqdm(context_map.items()):
         
-        # --- A. Model sinh text ---
-        input_text = Config.QA_PREFIX + context
+        # --- A. Tạo Prompt (Phải giống hệt lúc train trong dataset.py) ---
+        input_text = f"{Config.QA_PREFIX}{context}\n\nResponse: "
+        
         inputs = tokenizer(
             input_text, 
-            max_length=Config.MAX_SOURCE_LENGTH, 
-            truncation=True, 
-            return_tensors="pt"
-        ).to(device)
+            return_tensors="pt",
+            truncation=True,
+            max_length=Config.MAX_SOURCE_LENGTH
+        ).to(model.device)
 
+        # --- B. Generate ---
         with torch.no_grad():
             outputs = model.generate(
-                inputs.input_ids,
-                max_length=Config.MAX_TARGET_LENGTH,
-                num_beams=4,
-                early_stopping=True
+                **inputs,
+                max_new_tokens=Config.MAX_TARGET_LENGTH, # Dùng max_new_tokens cho CausalLM
+                num_beams=1,           # Qwen thường chạy tốt với greedy search (beams=1)
+                do_sample=False,       # Để đánh giá ổn định (deterministic), nên tắt sample
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id
             )
         
-        # Output thô (chứa cả Q và A)
-        raw_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # --- C. Xử lý Output (Quan trọng cho Qwen) ---
+        # outputs chứa cả [Input IDs + Generated IDs]. Cần cắt bỏ Input.
+        input_len = inputs.input_ids.shape[1]
+        generated_ids = outputs[0][input_len:]
         
-        # --- B. Trích xuất chỉ câu hỏi (Prediction) ---
+        raw_output = tokenizer.decode(generated_ids, skip_special_tokens=True)
+        
+        # --- D. Trích xuất & So sánh ---
         pred_questions_str = parse_questions_only(raw_output)
-        
-        # --- C. Chuẩn bị câu hỏi thật (Reference) ---
-        # Nối tất cả câu hỏi thật lại thành 1 chuỗi
         ref_questions_str = " ".join(real_questions_list)
         
-        # Lưu lại để tính điểm
         predictions.append(pred_questions_str)
         references.append(ref_questions_str)
         
         details.append({
             "context_snippet": context[:100] + "...",
-            "generated_questions": pred_questions_str,
-            "real_questions": ref_questions_str
+            "generated_raw": raw_output,
+            "extracted_questions": pred_questions_str,
+            "ground_truth": ref_questions_str
         })
 
     # 4. Tính ROUGE
-    print("\nĐang tính toán điểm ROUGE cho Question...")
-    results = rouge.compute(predictions=predictions, references=references, use_stemmer=True)
+    print("\nĐang tính toán điểm ROUGE...")
+    # Kiểm tra nếu predictions rỗng (model chưa học được gì) để tránh lỗi
+    if not any(predictions):
+        print("Cảnh báo: Model không sinh ra được câu hỏi nào hợp lệ!")
+        results = {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0}
+    else:
+        results = rouge.compute(predictions=predictions, references=references, use_stemmer=True)
 
     print("\n" + "="*40)
-    print("KẾT QUẢ ROUGE (CHỈ TÍNH CÂU HỎI)")
+    print("KẾT QUẢ ROUGE (Qwen - Questions Only)")
     print("="*40)
-    print(f"ROUGE-1: {results['rouge1']:.4f}")
-    print(f"ROUGE-2: {results['rouge2']:.4f}")
-    print(f"ROUGE-L: {results['rougeL']:.4f}")
+    print(f"ROUGE-1: {results['rouge1'] * 100:.2f}")
+    print(f"ROUGE-2: {results['rouge2'] * 100:.2f}")
+    print(f"ROUGE-L: {results['rougeL'] * 100:.2f}")
     print("="*40)
 
     # 5. Lưu kết quả
