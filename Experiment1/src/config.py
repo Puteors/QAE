@@ -4,7 +4,7 @@ class Config:
     MAX_TARGET_LENGTH = 512
     BATCH_SIZE = 4
     LEARNING_RATE = 2e-5
-    EPOCHS = 10               # Tăng Epoch lên vì ta sẽ dừng sớm (early stopping) hoặc lấy best step
+    EPOCHS = 1               
     OUTPUT_DIR = "./results"
     
     # Cấu hình Steps
