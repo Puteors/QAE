@@ -29,7 +29,7 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     
     # Khi training CausalLM, padding side không quá quan trọng, nhưng để 'right' an toàn hơn với collator này
-    tokenizer.padding_side = "right" 
+    tokenizer.padding_side = "left" 
 
     # 2. Load Model (Decoder-only)
     model = AutoModelForCausalLM.from_pretrained(
