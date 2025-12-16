@@ -2,7 +2,7 @@ class Config:
     # --- MODEL ---
     # Hãy đảm bảo tên model chính xác trên HuggingFace
     # Ví dụ: "Qwen/Qwen2.5-1.5B-Instruct" hoặc "Qwen/Qwen2.5-3B"
-    MODEL_NAME = "Qwen/Qwen3-4B"
+    MODEL_NAME = "Qwen/Qwen3-0.6B"
     
     # --- DATA PATHS ---
     TRAIN_FILE = "./data/train.json"
