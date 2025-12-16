@@ -2,7 +2,7 @@ class Config:
     # --- MODEL ---
     # Hãy đảm bảo tên model chính xác trên HuggingFace
     # Ví dụ: "Qwen/Qwen2.5-1.5B-Instruct" hoặc "Qwen/Qwen2.5-3B"
-    MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct" 
+    MODEL_NAME = "Qwen/Qwen3-4B"
     
     # --- DATA PATHS ---
     TRAIN_FILE = "./data/train.json"
@@ -11,7 +11,7 @@ class Config:
     # --- HYPERPARAMETERS ---
     # Qwen có context window lớn, nhưng để train nhanh demo thì để thấp
     MAX_SOURCE_LENGTH = 2048 
-    MAX_TARGET_LENGTH = 1024
+    MAX_TARGET_LENGTH = 2048
     BATCH_SIZE = 4            # Giảm batch size vì Qwen tốn VRAM hơn T5
     LEARNING_RATE = 2e-4       # Qwen thường dùng LR cao hơn T5 một chút với LoRA
     EPOCHS = 1
