@@ -10,9 +10,9 @@ class Config:
     
     # --- HYPERPARAMETERS ---
     # Qwen có context window lớn, nhưng để train nhanh demo thì để thấp
-    MAX_SOURCE_LENGTH = 512 
-    MAX_TARGET_LENGTH = 512
-    BATCH_SIZE = 2             # Giảm batch size vì Qwen tốn VRAM hơn T5
+    MAX_SOURCE_LENGTH = 2048 
+    MAX_TARGET_LENGTH = 1024
+    BATCH_SIZE = 4            # Giảm batch size vì Qwen tốn VRAM hơn T5
     LEARNING_RATE = 2e-4       # Qwen thường dùng LR cao hơn T5 một chút với LoRA
     EPOCHS = 1
     WEIGHT_DECAY = 0.01
