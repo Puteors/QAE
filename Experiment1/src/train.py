@@ -35,7 +35,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         Config.MODEL_NAME,
         trust_remote_code=True,
-        torch_dtype="auto",       # Tự động chọn float16 hoặc bfloat16 tùy GPU
+        dtype="auto",       # Tự động chọn float16 hoặc bfloat16 tùy GPU
         device_map="auto"         # Tự động chia model vào GPU
     )
     

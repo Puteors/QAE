@@ -1,5 +1,8 @@
 class Config:
     # --- MODEL & TOKENIZER ---
+    # Lưu ý: Code hiện tại dùng Seq2SeqTrainer (phù hợp T5, BART). 
+    # Nếu dùng Qwen (CausalLM), code cần sửa sang SFTTrainer hoặc cấu trúc khác.
+    # Để chạy code này mượt mà, nên dùng: "google/flan-t5-base" hoặc "google/flan-t5-large"
     MODEL_NAME = "Qwen/Qwen3-4B" 
     
     # --- DATA PATHS ---
