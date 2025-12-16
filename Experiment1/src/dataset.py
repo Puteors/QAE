@@ -1,122 +1,78 @@
 import json
-import torch
 from torch.utils.data import Dataset
+from collections import defaultdict
+from src.config import Config
 
-class BaseDataset(Dataset):
-    def __init__(self, data_path):
-        with open(data_path, 'r', encoding='utf-8') as f:
-            raw_data = json.load(f)
-        self.data = []
+class QAGenDataset(Dataset):
+    def __init__(self, json_path, tokenizer):
+        self.tokenizer = tokenizer
+        self.data = self.load_and_group_data(json_path)
         
+    def load_and_group_data(self, path):
+        with open(path, 'r', encoding='utf-8') as f:
+            raw_data = json.load(f)
+        
+        # 1. Gom nhóm các câu hỏi cùng context
+        grouped = defaultdict(list)
         for item in raw_data:
-            answers = item.get('answers')
-            if answers is None: continue
-            if 'text' not in answers or len(answers['text']) == 0: continue
-
-            self.data.append({
-                'context': item['context'],
-                'question': item['question'],
-                'answer_text': answers['text'][0],
-                'answer_start': answers['answer_start'][0]
+            context = item['context']
+            q = item['question']
+            
+            # Lấy câu trả lời (ưu tiên text thật, hoặc plausible nếu impossible=True)
+            a = ""
+            if not item['is_impossible'] and item['answers']['text']:
+                a = item['answers']['text'][0]
+            elif item['is_impossible'] and item.get('plausible_answers'):
+                a = item['plausible_answers']['text'][0]
+            
+            if a: # Chỉ lấy nếu có câu trả lời
+                grouped[context].append((q, a))
+        
+        # 2. Tạo format training
+        dataset = []
+        for context, qa_list in grouped.items():
+            # Tạo chuỗi target: "question: A answer: B [SEP] question: C answer: D"
+            pair_strings = []
+            for q, a in qa_list:
+                pair_str = f"{Config.Q_TAG}{q}{Config.A_TAG}{a}"
+                pair_strings.append(pair_str)
+            
+            target_text = Config.PAIR_SEP.join(pair_strings)
+            
+            dataset.append({
+                "context": context,
+                "target": target_text
             })
-        print(f"Loaded {len(self.data)} samples from {data_path}")
+        return dataset
 
     def __len__(self):
         return len(self.data)
-    
-    def __getitem__(self, idx):
-        return self.data[idx]
-
-class AEDataset(BaseDataset):
-    def __init__(self, data_path, tokenizer, max_len=512):
-        super().__init__(data_path)
-        self.tokenizer = tokenizer
-        self.max_len = max_len
 
     def __getitem__(self, idx):
         item = self.data[idx]
-        context = item['context']
-        start_char = item['answer_start']
-        end_char = start_char + len(item['answer_text'])
+        input_text = Config.QA_PREFIX + item['context']
+        target_text = item['target']
 
-        # Tokenize context
-        tokenized_inputs = self.tokenizer(
-            context,
-            max_length=self.max_len,
+        # Tokenize Input
+        # BỎ 'return_tensors="pt"' đi
+        inputs = self.tokenizer(
+            input_text,
+            max_length=Config.MAX_SOURCE_LENGTH,
             padding="max_length",
             truncation=True,
-            return_offsets_mapping=True,
-            return_tensors="pt"
         )
-        
-        input_ids = tokenized_inputs["input_ids"].squeeze()
-        attention_mask = tokenized_inputs["attention_mask"].squeeze()
-        offset_mapping = tokenized_inputs["offset_mapping"].squeeze().tolist()
-        
-        labels = [0] * len(input_ids)
-        
-        # --- LOGIC GÁN NHÃN MỚI (OVERLAP) ---
-        # Logic cũ quá chặt, nếu token dính dấu cách hoặc bị cắt đôi sẽ bị bỏ qua.
-        # Logic mới: Chỉ cần token có giao thoa với vùng câu trả lời là tính.
-        
-        for i, (start, end) in enumerate(offset_mapping):
-            if start == 0 and end == 0: continue 
-            
-            # Kiểm tra giao thoa (Overlap)
-            # Token nằm trong vùng answer nếu: điểm đầu token < điểm cuối answer VÀ điểm cuối token > điểm đầu answer
-            if start < end_char and end > start_char:
-                # Nếu token bắt đầu gần vị trí bắt đầu của answer -> B-ANS
-                # Lưu ý: start có thể nhỏ hơn start_char (do token chứa dấu cách phía trước)
-                if start <= start_char and end > start_char: 
-                     labels[i] = 1 # B-ANS
-                elif start > start_char:
-                     labels[i] = 2 # I-ANS
-                else:
-                     labels[i] = 2 # Trường hợp còn lại cho vào I
-        # -------------------------------------
 
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": torch.tensor(labels, dtype=torch.long)
-        }
-
-class QGDataset(BaseDataset):
-    def __init__(self, data_path, tokenizer, max_len_input=512, max_len_target=64):
-        super().__init__(data_path)
-        self.tokenizer = tokenizer
-        self.max_len_input = max_len_input
-        self.max_len_target = max_len_target
-
-    def __getitem__(self, idx):
-        item = self.data[idx]
-        context = item['context']
-        ans_text = item['answer_text']
-        ans_start = item['answer_start']
-        
-        prefix = context[:ans_start]
-        suffix = context[ans_start + len(ans_text):]
-        input_text = f"{prefix}<hl> {ans_text} <hl>{suffix}"
-        
-        target_text = item['question']
-
-        inputs = self.tokenizer(
-            input_text, 
-            max_length=self.max_len_input, 
-            padding="max_length", 
-            truncation=True, 
-            return_tensors="pt"
-        )
+        # Tokenize Output
+        # BỎ 'return_tensors="pt"' đi
         targets = self.tokenizer(
-            target_text, 
-            max_length=self.max_len_target, 
-            padding="max_length", 
-            truncation=True, 
-            return_tensors="pt"
+            target_text,
+            max_length=Config.MAX_TARGET_LENGTH,
+            padding="max_length",
+            truncation=True,
         )
 
         return {
-            "input_ids": inputs.input_ids.squeeze(),
-            "attention_mask": inputs.attention_mask.squeeze(),
-            "labels": targets.input_ids.squeeze()
+            "input_ids": inputs.input_ids,          # Đây là List[int]
+            "attention_mask": inputs.attention_mask,# Đây là List[int]
+            "labels": targets.input_ids             # Đây là List[int]
         }
