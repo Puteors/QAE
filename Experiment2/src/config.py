@@ -11,7 +11,6 @@ class Config:
     EVAL_STEPS = 100          # Đánh giá và lưu sau mỗi 100 bước
     SAVE_TOTAL_LIMIT = 2      # Chỉ giữ lại 2 checkpoint tốt nhất để tiết kiệm ổ cứng
     
-    # Token định dạng (giữ nguyên như cũ)
     PAIR_SEP = " [SEP] "
     Q_TAG = "question: "
     A_TAG = " answer: "

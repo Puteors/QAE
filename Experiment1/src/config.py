@@ -30,6 +30,11 @@ class Config:
     # Các modules quan trọng của Qwen cần được áp dụng LoRA
     LORA_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     
+        # Token định dạng (giữ nguyên như cũ)
+    PAIR_SEP = " [SEP] "
+    Q_TAG = "question: "
+    A_TAG = " answer: "
+    QA_PREFIX = "generate_qa: "
     # --- FORMATTING ---
     # Qwen (Instruct) thường dùng Chat Template, nhưng ở đây ta dùng format đơn giản:
     # Input: Generate QA based on: {context}
