@@ -68,7 +68,7 @@ class QAGenDataset(Dataset):
         # 3. Tokenize toàn bộ
         encoded = self.tokenizer(
             full_text,
-            max_length=Config.MAX_SOURCE_LENGTH, # Qwen chỉ dùng 1 max length chung
+            max_length=Config.MAX_SOURCE_LENGTH+256, # Qwen chỉ dùng 1 max length chung
             padding="max_length",
             truncation=True,
             return_tensors="pt"
