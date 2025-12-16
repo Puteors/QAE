@@ -5,7 +5,8 @@ from transformers import (
     T5ForConditionalGeneration, 
     Seq2SeqTrainingArguments, 
     Seq2SeqTrainer,
-    DataCollatorForSeq2Seq
+    DataCollatorForSeq2Seq,
+    AutoModelForSeq2SeqLM
 )
 from src.config import Config
 from src.dataset import QAGenDataset
@@ -16,7 +17,7 @@ from peft import LoraConfig, TaskType, get_peft_model
 def main():
     # 1. Load Tokenizer & Model
     tokenizer = AutoTokenizer.from_pretrained(Config.MODEL_NAME)
-    model = T5ForConditionalGeneration.from_pretrained(Config.MODEL_NAME)
+    model = AutoModelForSeq2SeqLM.from_pretrained(Config.MODEL_NAME)
     peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1)
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
