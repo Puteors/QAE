@@ -43,14 +43,12 @@ def load_model_and_tokenizer():
     # 1. Load Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(Config.MODEL_NAME)
     
-    # --- [FIX 1] Xử lý PAD TOKEN (Bắt buộc để tránh lỗi indices) ---
+    # Xử lý PAD TOKEN
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         print("ℹ️ Đã gán pad_token = eos_token")
     
-    # Cập nhật padding side (T5 thường là right hoặc mặc định)
-    tokenizer.padding_side = "right" 
-    # -----------------------------------------------------------
+    tokenizer.padding_side = "right"
     
     # 2. Cấu hình Quantization
     bnb_config = None
@@ -58,20 +56,13 @@ def load_model_and_tokenizer():
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type=Config.BNB_4BIT_QUANT_TYPE,
-            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_compute_dtype=torch.float16,  # Quan trọng: Dùng float16
             bnb_4bit_use_double_quant=True,
         )
         print("✅ Đang sử dụng 4-bit Quantization (QLoRA)")
     
-    # --- [FIX 2] Xử lý Device Map ---
-    # Nếu dùng 4-bit: Buộc phải dùng device_map, nhưng ta ép về GPU 0 để tránh lỗi split
-    # Nếu KHÔNG dùng 4-bit: Bỏ device_map để Trainer tự quản lý (ổn định nhất)
-    
-    device_map_config = None
-    if Config.USE_4BIT:
-        device_map_config = {"": 0} # Ép toàn bộ model vào GPU 0
-    else:
-        device_map_config = None    # Để None, Trainer sẽ tự move model vào cuda:0
+    # Xử lý Device Map
+    device_map_config = {"": 0} if Config.USE_4BIT else None
         
     print(f"⚙️ Device Map config: {device_map_config}")
 
@@ -79,24 +70,24 @@ def load_model_and_tokenizer():
     model = T5GemmaForConditionalGeneration.from_pretrained(
         Config.MODEL_NAME,
         quantization_config=bnb_config,
-        torch_dtype=torch.float16, # Luôn dùng fp16 cho nhẹ
+        torch_dtype=torch.float16, # Bắt buộc float16 để khớp với BNB
         device_map=device_map_config 
     )
 
-    # Đồng bộ config model với tokenizer
+    # Đồng bộ config
     model.config.pad_token_id = tokenizer.pad_token_id
     model.config.eos_token_id = tokenizer.eos_token_id
 
-    # 4. Áp dụng PEFT/LoRA (nếu bật)
+    # 4. Áp dụng PEFT/LoRA
     if Config.USE_PEFT:
         print("=" * 50)
         print("🔧 Đang cấu hình PEFT/LoRA...")
         
         # Chuẩn bị model cho k-bit training
+        # Hàm này tự động cast các layer cần thiết về float32 (như layer norm) một cách an toàn
         if Config.USE_4BIT:
             model = prepare_model_for_kbit_training(model)
         
-        # Cấu hình LoRA
         lora_config = LoraConfig(
             task_type=TaskType.SEQ_2_SEQ_LM,
             r=Config.LORA_R,
@@ -107,14 +98,11 @@ def load_model_and_tokenizer():
             inference_mode=False,
         )
         
-        # Áp dụng LoRA
         model = get_peft_model(model, lora_config)
         
-        # [FIX 3] Đảm bảo model in/out đúng kiểu dữ liệu khi dùng Trainer
-        # Giúp tránh lỗi tensor mismatch
-        for param in model.parameters():
-            if param.requires_grad:
-                param.data = param.data.to(torch.float32) # Cast layer đang train về float32 để ổn định
+        # --- QUAN TRỌNG: ĐÃ XÓA VÒNG LẶP CAST FLOAT32 TẠI ĐÂY ---
+        # Không được tự ý cast param về float32 khi dùng 4-bit quantization
+        # vì nó làm lệch dtype input của layer bitsandbytes.
                 
         print_trainable_parameters(model)
         print("=" * 50)
