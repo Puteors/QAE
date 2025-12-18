@@ -13,7 +13,7 @@ from transformers import (
     Seq2SeqTrainer,
 )
 
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, TaskType
 from src.config import QAConfig, AEConfig
 from src.dataset import load_json, qa_gen_example, ae_tokenize_and_align
 
@@ -25,7 +25,7 @@ def apply_lora(model, task_type: str):
         lora_dropout=0.05,
         bias="none",
         task_type=task_type,  # "SEQ_2_SEQ_LM" hoặc "QUESTION_ANSWERING"
-        target_modules=["q_proj", "v_proj", "k_proj", "o_proj"]  # nếu báo lỗi -> đổi theo model
+        target_modules=["query_proj", "key_proj", "value_proj", "dense"]  # nếu báo lỗi -> đổi theo model
     )
     return get_peft_model(model, lora)
 
@@ -34,7 +34,7 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
     model = AutoModelForSeq2SeqLM.from_pretrained(cfg.model_name)
 
     if cfg.use_peft:
-        model = apply_lora(model, "SEQ_2_SEQ_LM")
+        model = apply_lora(model, TaskType.QUESTION_ANS)
 
     train_data = [qa_gen_example(x) for x in load_json(train_path)]
     valid_data = [qa_gen_example(x) for x in load_json(valid_path)]
@@ -95,7 +95,7 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
     model = AutoModelForQuestionAnswering.from_pretrained(cfg.model_name)
 
     if cfg.use_peft:
-        model = apply_lora(model, "QUESTION_ANSWERING")
+        model = apply_lora(model, "QUESTION_ANS")
 
     train_examples = load_json(train_path)
     valid_examples = load_json(valid_path)
