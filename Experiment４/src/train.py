@@ -59,13 +59,24 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         per_device_train_batch_size=cfg.batch_size,
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
-        evaluation_strategy="epoch",
-        save_strategy="epoch",
+
+        eval_strategy="steps",
+        eval_steps=1000,
+
+        save_strategy="steps",
+        save_steps=1000,
+        save_total_limit=2,
+
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+
         predict_with_generate=True,
         fp16=True,
         logging_steps=50,
         report_to="none",
     )
+
 
     trainer = Seq2SeqTrainer(
         model=model,
@@ -101,12 +112,23 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         per_device_train_batch_size=cfg.batch_size,
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
-        evaluation_strategy="epoch",
-        save_strategy="epoch",
+
+        eval_strategy="steps",
+        eval_steps=1000,
+
+        save_strategy="steps",
+        save_steps=1000,
+        save_total_limit=2,
+
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+
         fp16=True,
         logging_steps=50,
         report_to="none",
     )
+
 
     trainer = Trainer(
         model=model,

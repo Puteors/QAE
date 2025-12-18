@@ -8,7 +8,7 @@ class QAConfig:
     max_target_len: int = 64
     lr: float = 2e-5
     batch_size: int = 4
-    epochs: int = 3
+    epochs: int = 2
     output_dir: str = "outputs/bartpho_qa"
     use_peft: bool = True
 
@@ -19,7 +19,7 @@ class AEConfig:
     doc_stride: int = 128
     lr: float = 2e-5
     batch_size: int = 8
-    epochs: int = 3
+    epochs: int = 2
     output_dir: str = "outputs/mdeberta_ae"
     use_peft: bool = True
 
