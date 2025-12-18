@@ -39,6 +39,6 @@ class Config:
     ]
     
     # ============== QUANTIZATION (Optional) ==============
-    USE_4BIT = True                   # Bật QLoRA để tiết kiệm thêm VRAM
+    USE_4BIT = False                   # Bật QLoRA để tiết kiệm thêm VRAM
     BNB_4BIT_QUANT_TYPE = "nf4"
     BNB_4BIT_COMPUTE_DTYPE = "float16"
