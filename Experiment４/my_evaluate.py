@@ -1,15 +1,13 @@
-# src/evaluate.py
-from typing import List
+# my_evaluate.py
 import evaluate
-from src.config import EvalConfig
 
-def bertscore(preds: List[str], refs: List[str], cfg=EvalConfig()):
+def bertscore(preds, refs, model_type="xlm-roberta-base"):
     bs = evaluate.load("bertscore")
     out = bs.compute(
         predictions=preds,
         references=refs,
         lang="vi",
-        model_type=cfg.bertscore_model,
+        model_type=model_type,
         rescale_with_baseline=True,
     )
     return {
