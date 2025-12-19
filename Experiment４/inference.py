@@ -4,6 +4,7 @@ import json
 from typing import Any, Dict, List, Tuple
 
 import torch
+from tqdm import tqdm
 from transformers import (
     AutoTokenizer,
     AutoModelForSeq2SeqLM,
@@ -40,7 +41,7 @@ def predict_bartpho(
     model.eval()
 
     outputs: List[Dict[str, Any]] = []
-    for ex in items:
+    for ex in tqdm(items, desc="BARTpho inference", unit="sample"):
         q = ex["question"].strip()
         c = ex["context"].strip()
         source = f"Câu hỏi: {q}\nNgữ cảnh: {c}"
@@ -74,16 +75,12 @@ def _best_span_from_logits(
     end_logits: torch.Tensor,
     max_answer_len: int = 30,
 ) -> Tuple[int, int, float]:
-    """
-    Return (best_start, best_end, score)
-    """
     s = start_logits.squeeze(0)
     e = end_logits.squeeze(0)
 
     best_score = -1e9
     best_i, best_j = 0, 0
 
-    # brute force within max_answer_len (OK for single example)
     s_cpu = s.detach().cpu()
     e_cpu = e.detach().cpu()
     for i in range(len(s_cpu)):
@@ -108,7 +105,7 @@ def predict_mdeberta_ae(
     model.eval()
 
     outputs: List[Dict[str, Any]] = []
-    for ex in items:
+    for ex in tqdm(items, desc="mDeBERTa AE inference", unit="sample"):
         question = ex["question"].strip()
         context = ex["context"]
 
@@ -128,7 +125,6 @@ def predict_mdeberta_ae(
         out = model(**enc)
         start_i, end_i, _ = _best_span_from_logits(out.start_logits, out.end_logits, max_answer_len=max_answer_len)
 
-        # map token span -> char span using offsets
         start_char, end_char = offsets[start_i][0], offsets[end_i][1]
         if end_char <= start_char:
             pred = ""
@@ -151,12 +147,10 @@ def main():
     ap.add_argument("--input_json", default="data/test.json")
     ap.add_argument("--output_json", default="outputs/preds.json")
 
-    # gen params
     ap.add_argument("--max_source_len", type=int, default=512)
     ap.add_argument("--max_new_tokens", type=int, default=64)
     ap.add_argument("--num_beams", type=int, default=4)
 
-    # ae params
     ap.add_argument("--max_len", type=int, default=384)
     ap.add_argument("--max_answer_len", type=int, default=40)
 
