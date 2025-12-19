@@ -10,6 +10,14 @@ from transformers import (
     AutoModelForQuestionAnswering,
 )
 
+def safe_gold(ex: Dict[str, Any]) -> str:
+    ans = ex.get("answers") or {}
+    texts = ans.get("text") or []
+    if isinstance(texts, list) and len(texts) > 0 and texts[0] is not None:
+        return str(texts[0]).strip()
+    return ""
+
+
 def load_json(path: str) -> List[Dict[str, Any]]:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -57,7 +65,7 @@ def predict_bartpho(
             "uit_id": ex.get("uit_id"),
             "question": ex.get("question"),
             "pred": pred,
-            "gold": (ex.get("answers", {}) or {}).get("text", [""])[0] if ex.get("answers") else "",
+            "gold": safe_gold(ex),
         })
     return outputs
 
@@ -132,7 +140,7 @@ def predict_mdeberta_ae(
             "uit_id": ex.get("uit_id"),
             "question": ex.get("question"),
             "pred": pred,
-            "gold": (ex.get("answers", {}) or {}).get("text", [""])[0] if ex.get("answers") else "",
+            "gold": safe_gold(ex),
         })
     return outputs
 
