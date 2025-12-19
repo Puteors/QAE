@@ -3,7 +3,7 @@ import argparse
 import json
 from typing import Any, Dict, List
 
-from src.inference import predict_bartpho, predict_mdeberta_ae
+from inference import predict_bartpho, predict_mdeberta_ae
 from src.evaluate import bertscore  # dùng file evaluate.py mình đưa trước đó
 
 def load_json(path: str) -> List[Dict[str, Any]]:
