@@ -1,14 +1,14 @@
 # my_evaluate.py
 import evaluate
 
-def bertscore(preds, refs, model_type="xlm-roberta-base"):
+def bertscore(preds, refs, model_type="xlm-roberta-base", lang="vi", rescale_with_baseline=False):
     bs = evaluate.load("bertscore")
     out = bs.compute(
         predictions=preds,
         references=refs,
-        lang="vi",
+        lang=lang,
         model_type=model_type,
-        rescale_with_baseline=True,
+        rescale_with_baseline=rescale_with_baseline,  # <-- tắt để khỏi cần baseline file
     )
     return {
         "P": float(sum(out["precision"]) / len(out["precision"])),
