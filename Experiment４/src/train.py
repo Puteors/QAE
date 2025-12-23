@@ -175,9 +175,6 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         eval_strategy="steps",
         eval_steps=1000,
 
-        # ✅ key chuẩn để đảm bảo transformers luôn hiểu
-        evaluation_strategy="steps",
-
         save_strategy="steps",
         save_steps=1000,
         save_total_limit=2,  # chỉ ảnh hưởng checkpoint "mới nhất"; best-K lưu riêng
@@ -248,9 +245,6 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         # ✅ theo yêu cầu giữ eval_strategy
         eval_strategy="steps",
         eval_steps=1000,
-
-        # ✅ key chuẩn để đảm bảo transformers luôn hiểu
-        evaluation_strategy="steps",
 
         save_strategy="steps",
         save_steps=1000,
