@@ -1,5 +1,7 @@
 # src/train.py
 import argparse
+import os
+import shutil
 from typing import List
 
 from datasets import Dataset
@@ -12,12 +14,68 @@ from transformers import (
     Seq2SeqTrainingArguments,
     Trainer,
     Seq2SeqTrainer,
+    TrainerCallback,
 )
 
 from peft import LoraConfig, get_peft_model, TaskType
 from src.config import QAConfig, AEConfig
 from src.dataset import load_json, qa_gen_example, ae_tokenize_and_align
 from src.metrics import compute_rough_and_bertscore_from_eval_pred
+
+
+# -------------------------
+# Callback: save best-K checkpoints by eval_loss
+# -------------------------
+class SaveBestKByEvalLossCallback(TrainerCallback):
+    """
+    Lưu TOP-K checkpoint có eval_loss thấp nhất vào <output_dir>/best_checkpoints.
+    - Không phụ thuộc save_total_limit (vì save_total_limit thường giữ theo "mới nhất").
+    - Mỗi lần on_evaluate, nếu loss đủ tốt thì save model + tokenizer.
+    """
+
+    def __init__(self, best_dir: str, k: int = 3, tokenizer=None):
+        self.best_dir = best_dir
+        self.k = k
+        self.tokenizer = tokenizer
+        self.best: List[tuple[float, str]] = []  # (loss, path)
+        os.makedirs(self.best_dir, exist_ok=True)
+
+    def _prune(self):
+        # Giữ K loss nhỏ nhất
+        self.best.sort(key=lambda x: x[0])
+        while len(self.best) > self.k:
+            loss, path = self.best.pop()  # remove worst
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        if not metrics:
+            return control
+
+        loss = metrics.get("eval_loss", None)
+        if loss is None:
+            return control
+
+        trainer = kwargs.get("trainer", None)
+        if trainer is None:
+            # một số version không truyền trainer -> không lưu
+            return control
+
+        loss = float(loss)
+        step = int(state.global_step)
+        save_path = os.path.join(self.best_dir, f"step-{step}_loss-{loss:.4f}")
+
+        # Chỉ lưu nếu thuộc top-K tốt nhất
+        should_save = (len(self.best) < self.k) or (loss < max(x[0] for x in self.best))
+        if should_save:
+            trainer.save_model(save_path)
+            if self.tokenizer is not None:
+                self.tokenizer.save_pretrained(save_path)
+
+            self.best.append((loss, save_path))
+            self._prune()
+
+        return control
 
 
 # -------------------------
@@ -111,15 +169,18 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         learning_rate=cfg.lr,
         per_device_train_batch_size=cfg.batch_size,
         per_device_eval_batch_size=cfg.batch_size,
-        num_train_epochs=cfg.epochs,
+        num_train_epochs=cfg.epochs,  # config đang là 2 epochs
 
-        # ✅ Giữ nguyên eval_strategy theo yêu cầu
+        # ✅ theo yêu cầu giữ eval_strategy
         eval_strategy="steps",
-        eval_steps=1,
+        eval_steps=1000,
+
+        # ✅ key chuẩn để đảm bảo transformers luôn hiểu
+        evaluation_strategy="steps",
 
         save_strategy="steps",
         save_steps=1000,
-        save_total_limit=2,
+        save_total_limit=2,  # chỉ ảnh hưởng checkpoint "mới nhất"; best-K lưu riêng
 
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
@@ -129,6 +190,12 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         fp16=True,
         logging_steps=50,
         report_to="none",
+    )
+
+    best_cb = SaveBestKByEvalLossCallback(
+        best_dir=os.path.join(cfg.output_dir, "best_checkpoints"),
+        k=3,  # giữ top-3 eval_loss thấp nhất (đổi tuỳ bạn)
+        tokenizer=tok,
     )
 
     trainer = Seq2SeqTrainer(
@@ -144,6 +211,7 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
             bert_lang="vi",
             bert_model_type="xlm-roberta-base",  # hoặc "vinai/phobert-base"
         ),
+        callbacks=[best_cb],
     )
 
     trainer.train()
@@ -175,11 +243,14 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         learning_rate=cfg.lr,
         per_device_train_batch_size=cfg.batch_size,
         per_device_eval_batch_size=cfg.batch_size,
-        num_train_epochs=cfg.epochs,
+        num_train_epochs=cfg.epochs,  # config đang là 2 epochs
 
-        # ✅ Giữ nguyên eval_strategy theo yêu cầu
+        # ✅ theo yêu cầu giữ eval_strategy
         eval_strategy="steps",
-        eval_steps=1,
+        eval_steps=1000,
+
+        # ✅ key chuẩn để đảm bảo transformers luôn hiểu
+        evaluation_strategy="steps",
 
         save_strategy="steps",
         save_steps=1000,
@@ -194,13 +265,20 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         report_to="none",
     )
 
+    best_cb = SaveBestKByEvalLossCallback(
+        best_dir=os.path.join(cfg.output_dir, "best_checkpoints"),
+        k=3,
+        tokenizer=tok,
+    )
+
     trainer = Trainer(
         model=model,
         args=args,
         train_dataset=ds_train,
         eval_dataset=ds_valid,
         tokenizer=tok,
-        # AE: chỉ eval_loss
+        callbacks=[best_cb],
+        # AE: chỉ eval_loss (không compute_metrics)
     )
 
     trainer.train()
