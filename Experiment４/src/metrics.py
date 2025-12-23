@@ -1,7 +1,7 @@
 # src/metrics.py
 from __future__ import annotations
 
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 import re
 
 import evaluate
@@ -9,61 +9,52 @@ import numpy as np
 
 
 # -------------------------
-# Utils: normalize / tokenize
+# Text utils
 # -------------------------
 def normalize_text(s: str) -> str:
-    s = (s or "").strip().lower()
+    s = (s or "").strip()
     s = re.sub(r"\s+", " ", s)
     return s
 
 
-def whitespace_tokens(s: str) -> List[str]:
-    s = normalize_text(s)
-    return s.split() if s else []
-
-
 # -------------------------
-# Rough metrics: EM, token-F1
+# ROUGE (cached) -> dùng làm rough1/rough2/roughL
 # -------------------------
-def exact_match(pred: str, gold: str) -> float:
-    return 1.0 if normalize_text(pred) == normalize_text(gold) else 0.0
+_ROUGE = None
 
 
-def token_f1(pred: str, gold: str) -> float:
-    p = whitespace_tokens(pred)
-    g = whitespace_tokens(gold)
-
-    if len(p) == 0 and len(g) == 0:
-        return 1.0
-    if len(p) == 0 or len(g) == 0:
-        return 0.0
-
-    # multiset overlap
-    counts = {}
-    for t in p:
-        counts[t] = counts.get(t, 0) + 1
-
-    hit = 0
-    for t in g:
-        if counts.get(t, 0) > 0:
-            hit += 1
-            counts[t] -= 1
-
-    if hit == 0:
-        return 0.0
-
-    prec = hit / len(p)
-    rec = hit / len(g)
-    return 2 * prec * rec / (prec + rec)
+def get_rouge():
+    global _ROUGE
+    if _ROUGE is None:
+        _ROUGE = evaluate.load("rouge")
+    return _ROUGE
 
 
-def rough_scores(preds: List[str], refs: List[str]) -> Dict[str, float]:
+def rouge_as_rough_scores(
+    preds: List[str],
+    refs: List[str],
+    use_stemmer: bool = False,
+) -> Dict[str, float]:
+    """
+    Map ROUGE -> rough metrics:
+      - rough1 = rouge1
+      - rough2 = rouge2
+      - roughL = rougeL
+    """
     if len(preds) == 0:
-        return {"em": 0.0, "token_f1": 0.0}
+        return {"rough1": 0.0, "rough2": 0.0, "roughL": 0.0}
 
-    em = sum(exact_match(p, r) for p, r in zip(preds, refs)) / len(preds)
-    f1 = sum(token_f1(p, r) for p, r in zip(preds, refs)) / len(preds)
-    return {"em": float(em), "token_f1": float(f1)}
+    rouge = get_rouge()
+    result = rouge.compute(
+        predictions=preds,
+        references=refs,
+        use_stemmer=use_stemmer,  # tiếng Việt thường không cần stemmer
+    )
+    return {
+        "rough1": float(result["rouge1"]),
+        "rough2": float(result["rouge2"]),
+        "roughL": float(result["rougeL"]),
+    }
 
 
 # -------------------------
@@ -83,13 +74,9 @@ def bertscore_scores(
     preds: List[str],
     refs: List[str],
     lang: str = "vi",
-    model_type: str = "xlm-roberta-base",
+    model_type: str = "xlm-roberta-base",  # hoặc "vinai/phobert-base"
     rescale_with_baseline: bool = False,
 ) -> Dict[str, float]:
-    """
-    Trả về trung bình P/R/F1.
-    Lưu ý: cần refs (gold). Nếu refs rỗng -> không tính được.
-    """
     if len(preds) == 0:
         return {"bertscore_p": 0.0, "bertscore_r": 0.0, "bertscore_f1": 0.0}
 
@@ -109,7 +96,7 @@ def bertscore_scores(
 
 
 # -------------------------
-# (Optional) Decode helpers for Trainer eval_pred
+# Decode helpers (Trainer eval_pred)
 # -------------------------
 def replace_ignore_index(
     labels: np.ndarray,
@@ -134,6 +121,9 @@ def decode_preds_and_labels(
     labels = replace_ignore_index(labels, tokenizer.pad_token_id, ignore_index=ignore_index)
     decoded_labels = decode_batch(tokenizer, labels)
 
+    # normalize nhẹ cho ổn định
+    decoded_preds = [normalize_text(x) for x in decoded_preds]
+    decoded_labels = [normalize_text(x) for x in decoded_labels]
     return decoded_preds, decoded_labels
 
 
@@ -153,7 +143,7 @@ def filter_nonempty_refs(
 
 
 # -------------------------
-# Public: compute all metrics for evaluate
+# Public metrics APIs
 # -------------------------
 def compute_rough_and_bertscore_from_text(
     preds: List[str],
@@ -162,13 +152,14 @@ def compute_rough_and_bertscore_from_text(
     bert_model_type: str = "xlm-roberta-base",
 ) -> Dict[str, float]:
     """
-    Dùng cho evaluate script (đọc preds.json: pred/gold).
+    Dùng cho script evaluate (đọc preds.json: pred/gold).
     """
     preds_f, refs_f = filter_nonempty_refs(preds, refs)
-    metrics = {}
-    metrics.update(rough_scores(preds_f, refs_f))
+
+    metrics: Dict[str, float] = {}
+    metrics.update(rouge_as_rough_scores(preds_f, refs_f))
     metrics.update(bertscore_scores(preds_f, refs_f, lang=bert_lang, model_type=bert_model_type))
-    metrics["n_eval"] = float(len(preds_f))
+    metrics["n_eval"] = float(len(refs_f))
     return metrics
 
 
@@ -179,7 +170,7 @@ def compute_rough_and_bertscore_from_eval_pred(
     bert_model_type: str = "xlm-roberta-base",
 ) -> Dict[str, float]:
     """
-    Dùng nếu bạn muốn nhét vào Trainer.compute_metrics (seq2seq).
+    Dùng cho Trainer.compute_metrics (seq2seq).
     """
     preds, refs = decode_preds_and_labels(eval_pred, tokenizer)
     return compute_rough_and_bertscore_from_text(

@@ -54,10 +54,10 @@ def apply_lora(model, task_type: TaskType):
     - Bert-like: query/key/value...
     """
     candidates = [
-        ["q_proj", "k_proj", "v_proj", "out_proj"],       # BART/mBART
-        ["q_proj", "v_proj"],                             # fallback
-        ["query", "key", "value"],                        # BERT-like
-        ["query_proj", "key_proj", "value_proj", "dense"] # một số kiến trúc khác
+        ["q_proj", "k_proj", "v_proj", "out_proj"],        # BART/mBART
+        ["q_proj", "v_proj"],                              # fallback
+        ["query", "key", "value"],                         # BERT-like
+        ["query_proj", "key_proj", "value_proj", "dense"], # một số kiến trúc khác
     ]
 
     target_modules = _find_target_modules(model, candidates)
@@ -113,7 +113,7 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
-        # ✅ eval mỗi n steps
+        # ✅ Giữ nguyên eval_strategy theo yêu cầu
         eval_strategy="steps",
         eval_steps=1,
 
@@ -125,7 +125,7 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         metric_for_best_model="eval_loss",
         greater_is_better=False,
 
-        predict_with_generate=True,  # ✅ cần cho seq2seq để có predictions
+        predict_with_generate=True,
         fp16=True,
         logging_steps=50,
         report_to="none",
@@ -138,8 +138,6 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         eval_dataset=ds_valid,
         data_collator=collator,
         tokenizer=tok,
-
-        # ✅ Log thêm rough + BERTScore mỗi lần eval
         compute_metrics=lambda p: compute_rough_and_bertscore_from_eval_pred(
             p,
             tokenizer=tok,
@@ -179,7 +177,7 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
-        # ✅ giữ eval_loss mỗi n steps
+        # ✅ Giữ nguyên eval_strategy theo yêu cầu
         eval_strategy="steps",
         eval_steps=1,
 
@@ -202,7 +200,7 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         train_dataset=ds_train,
         eval_dataset=ds_valid,
         tokenizer=tok,
-        # ✅ không compute_metrics => chỉ eval_loss
+        # AE: chỉ eval_loss
     )
 
     trainer.train()
