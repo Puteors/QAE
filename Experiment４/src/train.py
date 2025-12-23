@@ -116,8 +116,8 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
-        evaluation_strategy="steps",
-        eval_steps=1000,
+        eval_strategy="steps",
+        eval_steps=1,
 
         save_strategy="steps",
         save_steps=1000,
@@ -171,7 +171,7 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         num_train_epochs=cfg.epochs,
 
         # ✅ chỉ eval_loss
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         eval_steps=1,
 
         save_strategy="steps",
