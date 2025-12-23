@@ -1,6 +1,5 @@
 # src/train.py
 import argparse
-import numpy as np
 from datasets import Dataset
 from transformers import (
     AutoTokenizer,
@@ -17,24 +16,32 @@ from peft import LoraConfig, get_peft_model, TaskType
 from src.config import QAConfig, AEConfig
 from src.dataset import load_json, qa_gen_example, ae_tokenize_and_align
 
-def apply_lora(model, task_type: str):
-    # target_modules tùy kiến trúc; dưới đây là lựa chọn “rough” hay dùng
+
+def apply_lora(model, task_type: TaskType):
+    """
+    Apply LoRA (PEFT) to model.
+
+    target_modules phụ thuộc kiến trúc model; nếu gặp lỗi,
+    bạn cần đổi list này theo layer names thực tế của model.
+    """
     lora = LoraConfig(
         r=8,
         lora_alpha=16,
         lora_dropout=0.05,
         bias="none",
-        task_type=task_type,  # "SEQ_2_SEQ_LM" hoặc "QUESTION_ANSWERING"
-        target_modules=["query_proj", "key_proj", "value_proj", "dense"]  # nếu báo lỗi -> đổi theo model
+        task_type=task_type,
+        target_modules=["query_proj", "key_proj", "value_proj", "dense"],
     )
     return get_peft_model(model, lora)
+
 
 def train_bartpho(train_path, valid_path, cfg: QAConfig):
     tok = AutoTokenizer.from_pretrained(cfg.model_name)
     model = AutoModelForSeq2SeqLM.from_pretrained(cfg.model_name)
 
     if cfg.use_peft:
-        model = apply_lora(model, TaskType.QUESTION_ANS)
+        # Seq2Seq => SEQ_2_SEQ_LM
+        model = apply_lora(model, TaskType.SEQ_2_SEQ_LM)
 
     train_data = [qa_gen_example(x) for x in load_json(train_path)]
     valid_data = [qa_gen_example(x) for x in load_json(valid_path)]
@@ -60,7 +67,8 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
-        eval_strategy="steps",
+        # ✅ đúng tên tham số
+        evaluation_strategy="steps",
         eval_steps=1000,
 
         save_strategy="steps",
@@ -77,7 +85,6 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         report_to="none",
     )
 
-
     trainer = Seq2SeqTrainer(
         model=model,
         args=args,
@@ -85,17 +92,21 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         eval_dataset=ds_valid,
         data_collator=collator,
         tokenizer=tok,
+        # Nếu muốn tính metric khi train QA, có thể thêm compute_metrics ở đây.
     )
+
     trainer.train()
     trainer.save_model(cfg.output_dir)
     tok.save_pretrained(cfg.output_dir)
+
 
 def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
     tok = AutoTokenizer.from_pretrained(cfg.model_name, use_fast=True)
     model = AutoModelForQuestionAnswering.from_pretrained(cfg.model_name)
 
     if cfg.use_peft:
-        model = apply_lora(model, "QUESTION_ANS")
+        # Extractive QA => QUESTION_ANSWERING
+        model = apply_lora(model, TaskType.QUESTION_ANSWERING)
 
     train_examples = load_json(train_path)
     valid_examples = load_json(valid_path)
@@ -113,7 +124,8 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
-        eval_strategy="steps",
+        # ✅ Giữ eval_loss khi train AE (mỗi n step)
+        evaluation_strategy="steps",
         eval_steps=1000,
 
         save_strategy="steps",
@@ -129,17 +141,19 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         report_to="none",
     )
 
-
     trainer = Trainer(
         model=model,
         args=args,
         train_dataset=ds_train,
         eval_dataset=ds_valid,
         tokenizer=tok,
+        # ✅ Không compute_metrics => chỉ eval_loss
     )
+
     trainer.train()
     trainer.save_model(cfg.output_dir)
     tok.save_pretrained(cfg.output_dir)
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -152,6 +166,7 @@ def main():
         train_bartpho(args.train, args.valid, QAConfig())
     else:
         train_mdeberta_ae(args.train, args.valid, AEConfig())
+
 
 if __name__ == "__main__":
     main()
