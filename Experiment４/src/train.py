@@ -173,10 +173,10 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
 
         # ✅ theo yêu cầu giữ eval_strategy
         eval_strategy="steps",
-        eval_steps=1000,
+        eval_steps=100,
 
         save_strategy="steps",
-        save_steps=1000,
+        save_steps=100,
         save_total_limit=2,  # chỉ ảnh hưởng checkpoint "mới nhất"; best-K lưu riêng
 
         load_best_model_at_end=True,
@@ -244,10 +244,10 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
 
         # ✅ theo yêu cầu giữ eval_strategy
         eval_strategy="steps",
-        eval_steps=1000,
+        eval_steps=100,
 
         save_strategy="steps",
-        save_steps=1000,
+        save_steps=100,
         save_total_limit=2,
 
         load_best_model_at_end=True,
