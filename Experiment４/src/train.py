@@ -1,5 +1,7 @@
 # src/train.py
 import argparse
+from typing import List
+
 from datasets import Dataset
 from transformers import (
     AutoTokenizer,
@@ -17,21 +19,68 @@ from src.config import QAConfig, AEConfig
 from src.dataset import load_json, qa_gen_example, ae_tokenize_and_align
 
 
-def apply_lora(model, task_type: TaskType):
+def _find_target_modules(model, candidates: List[List[str]]) -> List[str]:
     """
-    Apply LoRA (PEFT) to model.
+    Trả về list target_modules đầu tiên mà tồn tại trong model.
+    candidates: list các phương án (mỗi phương án là list tên module).
+    """
+    # lấy tên tất cả submodules
+    names = set(n for n, _ in model.named_modules())
 
-    target_modules phụ thuộc kiến trúc model; nếu gặp lỗi,
-    bạn cần đổi list này theo layer names thực tế của model.
+    def exists_any(suffix: str) -> bool:
+        # PEFT match theo tên module (thường match suffix cũng OK tùy version),
+        # nên ta check "kết thúc bằng suffix" hoặc "trùng exact".
+        return any(n == suffix or n.endswith("." + suffix) for n in names)
+
+    for option in candidates:
+        ok = all(exists_any(m) for m in option)
+        if ok:
+            return option
+
+    # nếu không có option nào thỏa hoàn toàn, thử option nào có ít nhất 1 cái match
+    for option in candidates:
+        if any(exists_any(m) for m in option):
+            # lọc chỉ lấy module có match
+            matched = [m for m in option if exists_any(m)]
+            if matched:
+                return matched
+
+    return []
+
+
+def apply_lora(model, task_type: TaskType, prefer: str = "auto"):
     """
+    Apply LoRA (PEFT) với target_modules phù hợp theo kiến trúc model.
+    - prefer="auto": tự chọn theo tên layer phổ biến
+    - Nếu không tìm thấy target_modules: raise=False => tắt LoRA để tránh crash
+    """
+    # Các pattern phổ biến:
+    # - BART/mBART: q_proj, k_proj, v_proj, out_proj
+    # - T5: q, k, v, o (hoặc q_proj...)
+    # - DeBERTa/Roberta style: query, key, value, dense (tùy)
+    candidates = [
+        ["q_proj", "k_proj", "v_proj", "out_proj"],      # BART-like
+        ["q_proj", "v_proj"],                            # fallback nhẹ
+        ["query", "key", "value"],                       # bert-style
+        ["query_proj", "key_proj", "value_proj", "dense"]# style bạn đang dùng (nếu có)
+    ]
+
+    target_modules = _find_target_modules(model, candidates)
+    if not target_modules:
+        raise ValueError(
+            "Không tìm thấy target_modules phù hợp để gắn LoRA cho model này. "
+            "Hãy in ra model.named_modules() để chọn đúng tên layer."
+        )
+
     lora = LoraConfig(
         r=8,
         lora_alpha=16,
         lora_dropout=0.05,
         bias="none",
         task_type=task_type,
-        target_modules=["query_proj", "key_proj", "value_proj", "dense"],
+        target_modules=target_modules,
     )
+    print(f"[LoRA] task_type={task_type} target_modules={target_modules}")
     return get_peft_model(model, lora)
 
 
@@ -40,7 +89,7 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
     model = AutoModelForSeq2SeqLM.from_pretrained(cfg.model_name)
 
     if cfg.use_peft:
-        # Seq2Seq => SEQ_2_SEQ_LM
+        # BartPho (BART) => SEQ_2_SEQ_LM
         model = apply_lora(model, TaskType.SEQ_2_SEQ_LM)
 
     train_data = [qa_gen_example(x) for x in load_json(train_path)]
@@ -67,7 +116,6 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
-        # ✅ đúng tên tham số
         evaluation_strategy="steps",
         eval_steps=1000,
 
@@ -92,9 +140,7 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         eval_dataset=ds_valid,
         data_collator=collator,
         tokenizer=tok,
-        # Nếu muốn tính metric khi train QA, có thể thêm compute_metrics ở đây.
     )
-
     trainer.train()
     trainer.save_model(cfg.output_dir)
     tok.save_pretrained(cfg.output_dir)
@@ -124,9 +170,9 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
-        # ✅ Giữ eval_loss khi train AE (mỗi n step)
+        # ✅ chỉ eval_loss
         evaluation_strategy="steps",
-        eval_steps=1000,
+        eval_steps=1,
 
         save_strategy="steps",
         save_steps=1000,
@@ -147,9 +193,7 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         train_dataset=ds_train,
         eval_dataset=ds_valid,
         tokenizer=tok,
-        # ✅ Không compute_metrics => chỉ eval_loss
     )
-
     trainer.train()
     trainer.save_model(cfg.output_dir)
     tok.save_pretrained(cfg.output_dir)
