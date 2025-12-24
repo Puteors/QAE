@@ -42,7 +42,6 @@ class SaveBestKByEvalLossCallback(TrainerCallback):
         os.makedirs(self.best_dir, exist_ok=True)
 
     def _prune(self):
-        # Giữ K loss nhỏ nhất
         self.best.sort(key=lambda x: x[0])
         while len(self.best) > self.k:
             loss, path = self.best.pop()  # remove worst
@@ -59,14 +58,12 @@ class SaveBestKByEvalLossCallback(TrainerCallback):
 
         trainer = kwargs.get("trainer", None)
         if trainer is None:
-            # một số version không truyền trainer -> không lưu
             return control
 
         loss = float(loss)
         step = int(state.global_step)
         save_path = os.path.join(self.best_dir, f"step-{step}_loss-{loss:.4f}")
 
-        # Chỉ lưu nếu thuộc top-K tốt nhất
         should_save = (len(self.best) < self.k) or (loss < max(x[0] for x in self.best))
         if should_save:
             trainer.save_model(save_path)
@@ -131,12 +128,10 @@ def _find_target_modules(model, candidates: List[List[str]]) -> List[str]:
     def exists_any(suffix: str) -> bool:
         return any(n == suffix or n.endswith("." + suffix) for n in names)
 
-    # Ưu tiên option match đủ
     for option in candidates:
         if all(exists_any(m) for m in option):
             return option
 
-    # Fallback: lấy option có ít nhất 1 match
     for option in candidates:
         matched = [m for m in option if exists_any(m)]
         if matched:
@@ -176,19 +171,18 @@ def apply_lora(model, task_type: TaskType):
 
 
 # =========================================================
-# AE Trainer đúng chuẩn: override compute_loss
+# AE Trainer: override compute_loss (FIX num_items_in_batch)
 # =========================================================
 class ExtractiveQATrainer(Trainer):
     """
     Trainer chuẩn cho Extractive QA (mDeBERTa / XLM-R / PhoBERT...):
-    - CHỈ forward những keys hợp lệ cho QA: input_ids, attention_mask, token_type_ids, start_positions, end_positions
-    - Loại bỏ mọi key dư như labels => không còn lỗi unexpected keyword labels
+    - CHỈ forward keys hợp lệ cho QA
+    - Loại bỏ mọi key dư như labels
+    - FIX: tương thích transformers gọi compute_loss(..., num_items_in_batch=...)
     """
 
-    def compute_loss(self, model, inputs, return_outputs=False):
-        qa_inputs = {
-            "input_ids": inputs["input_ids"],
-        }
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        qa_inputs = {"input_ids": inputs["input_ids"]}
 
         if "attention_mask" in inputs and inputs["attention_mask"] is not None:
             qa_inputs["attention_mask"] = inputs["attention_mask"]
@@ -196,7 +190,6 @@ class ExtractiveQATrainer(Trainer):
         if "token_type_ids" in inputs and inputs["token_type_ids"] is not None:
             qa_inputs["token_type_ids"] = inputs["token_type_ids"]
 
-        # Labels chuẩn của extractive QA
         qa_inputs["start_positions"] = inputs["start_positions"]
         qa_inputs["end_positions"] = inputs["end_positions"]
 
@@ -237,7 +230,7 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         learning_rate=cfg.lr,
         per_device_train_batch_size=cfg.batch_size,
         per_device_eval_batch_size=cfg.batch_size,
-        num_train_epochs=cfg.epochs,  # config = 2
+        num_train_epochs=cfg.epochs,  # config=2
 
         # ✅ giữ eval_strategy
         eval_strategy="steps",
@@ -245,7 +238,7 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
 
         save_strategy="steps",
         save_steps=100,
-        save_total_limit=2,  # checkpoint "mới nhất" (best-K lưu riêng)
+        save_total_limit=2,
 
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
@@ -289,12 +282,10 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
 # Train: AE (Extractive QA)
 # =========================================================
 def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
-    # ✅ AE cần fast tokenizer vì return_offset_mapping
     tok = AutoTokenizer.from_pretrained(cfg.model_name, use_fast=True)
     model = AutoModelForQuestionAnswering.from_pretrained(cfg.model_name)
 
     if cfg.use_peft:
-        # ✅ Fix 2: fallback nếu PEFT không có QUESTION_ANSWERING
         qa_task = getattr(TaskType, "QUESTION_ANSWERING", TaskType.TOKEN_CLS)
         model = apply_lora(model, qa_task)
 
@@ -304,7 +295,7 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
     train_feats = ae_tokenize_and_align(tok, train_examples, cfg.max_len, cfg.doc_stride)
     valid_feats = ae_tokenize_and_align(tok, valid_examples, cfg.max_len, cfg.doc_stride)
 
-    # ✅ check feature keys để chắc chắn không có labels
+    # ✅ check: không được có labels
     if len(train_feats) > 0:
         keys = list(train_feats[0].keys())
         print("[DEBUG] AE feature keys:", keys)
@@ -319,7 +310,7 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         learning_rate=cfg.lr,
         per_device_train_batch_size=cfg.batch_size,
         per_device_eval_batch_size=cfg.batch_size,
-        num_train_epochs=cfg.epochs,  # config = 2
+        num_train_epochs=cfg.epochs,  # config=2
 
         # ✅ giữ eval_strategy
         eval_strategy="steps",
@@ -345,7 +336,6 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
     )
     log_cb = MetricsFileLoggerCallback(output_dir=cfg.output_dir)
 
-    # ✅ Dùng ExtractiveQATrainer thay vì Trainer để forward đúng keys
     trainer = ExtractiveQATrainer(
         model=model,
         args=args,
