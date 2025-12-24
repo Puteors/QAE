@@ -1,7 +1,9 @@
 # src/train.py
 import argparse
 import os
+import json
 import shutil
+from datetime import datetime
 from typing import List
 
 from datasets import Dataset
@@ -29,8 +31,6 @@ from src.metrics import compute_rough_and_bertscore_from_eval_pred
 class SaveBestKByEvalLossCallback(TrainerCallback):
     """
     Lưu TOP-K checkpoint có eval_loss thấp nhất vào <output_dir>/best_checkpoints.
-    - Không phụ thuộc save_total_limit (vì save_total_limit thường giữ theo "mới nhất").
-    - Mỗi lần on_evaluate, nếu loss đủ tốt thì save model + tokenizer.
     """
 
     def __init__(self, best_dir: str, k: int = 3, tokenizer=None):
@@ -41,7 +41,6 @@ class SaveBestKByEvalLossCallback(TrainerCallback):
         os.makedirs(self.best_dir, exist_ok=True)
 
     def _prune(self):
-        # Giữ K loss nhỏ nhất
         self.best.sort(key=lambda x: x[0])
         while len(self.best) > self.k:
             loss, path = self.best.pop()  # remove worst
@@ -58,14 +57,12 @@ class SaveBestKByEvalLossCallback(TrainerCallback):
 
         trainer = kwargs.get("trainer", None)
         if trainer is None:
-            # một số version không truyền trainer -> không lưu
             return control
 
         loss = float(loss)
         step = int(state.global_step)
         save_path = os.path.join(self.best_dir, f"step-{step}_loss-{loss:.4f}")
 
-        # Chỉ lưu nếu thuộc top-K tốt nhất
         should_save = (len(self.best) < self.k) or (loss < max(x[0] for x in self.best))
         if should_save:
             trainer.save_model(save_path)
@@ -79,24 +76,61 @@ class SaveBestKByEvalLossCallback(TrainerCallback):
 
 
 # -------------------------
+# Callback: log metrics to file
+# -------------------------
+class MetricsFileLoggerCallback(TrainerCallback):
+    """
+    Ghi metrics trong quá trình train vào file JSONL.
+    Mỗi lần evaluate sẽ append 1 dòng JSON.
+
+    File: <output_dir>/metrics_log.jsonl
+    """
+
+    def __init__(self, output_dir: str, filename: str = "metrics_log.jsonl"):
+        self.output_dir = output_dir
+        self.filepath = os.path.join(output_dir, filename)
+        os.makedirs(self.output_dir, exist_ok=True)
+
+        # ghi header nhẹ (optional)
+        with open(self.filepath, "a", encoding="utf-8") as f:
+            if os.path.getsize(self.filepath) == 0:
+                f.write("")  # jsonl không cần header
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        if not metrics:
+            return control
+
+        record = {
+            "time": datetime.now().isoformat(),
+            "global_step": int(state.global_step),
+            "epoch": float(state.epoch) if state.epoch is not None else None,
+        }
+        # merge all metrics
+        for k, v in metrics.items():
+            try:
+                record[k] = float(v)
+            except Exception:
+                record[k] = v
+
+        with open(self.filepath, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        return control
+
+
+# -------------------------
 # LoRA helpers
 # -------------------------
 def _find_target_modules(model, candidates: List[List[str]]) -> List[str]:
-    """
-    Trả về list target_modules phù hợp với model (dò theo tên submodule).
-    Ưu tiên option mà tất cả modules đều tồn tại; nếu không thì lấy những cái match được.
-    """
     names = set(n for n, _ in model.named_modules())
 
     def exists_any(suffix: str) -> bool:
         return any(n == suffix or n.endswith("." + suffix) for n in names)
 
-    # Ưu tiên option match đủ
     for option in candidates:
         if all(exists_any(m) for m in option):
             return option
 
-    # Fallback: lấy option có ít nhất 1 match
     for option in candidates:
         matched = [m for m in option if exists_any(m)]
         if matched:
@@ -106,16 +140,11 @@ def _find_target_modules(model, candidates: List[List[str]]) -> List[str]:
 
 
 def apply_lora(model, task_type: TaskType):
-    """
-    Apply LoRA với target_modules phù hợp theo kiến trúc.
-    - BART-like: q_proj, k_proj, v_proj, out_proj (phổ biến cho BartPho)
-    - Bert-like: query/key/value...
-    """
     candidates = [
-        ["q_proj", "k_proj", "v_proj", "out_proj"],        # BART/mBART
-        ["q_proj", "v_proj"],                              # fallback
-        ["query", "key", "value"],                         # BERT-like
-        ["query_proj", "key_proj", "value_proj", "dense"], # một số kiến trúc khác
+        ["q_proj", "k_proj", "v_proj", "out_proj"],
+        ["q_proj", "v_proj"],
+        ["query", "key", "value"],
+        ["query_proj", "key_proj", "value_proj", "dense"],
     ]
 
     target_modules = _find_target_modules(model, candidates)
@@ -169,15 +198,15 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         learning_rate=cfg.lr,
         per_device_train_batch_size=cfg.batch_size,
         per_device_eval_batch_size=cfg.batch_size,
-        num_train_epochs=cfg.epochs,  # config đang là 2 epochs
+        num_train_epochs=cfg.epochs,
 
-        # ✅ theo yêu cầu giữ eval_strategy
+        # giữ eval_strategy theo yêu cầu
         eval_strategy="steps",
         eval_steps=100,
 
         save_strategy="steps",
         save_steps=100,
-        save_total_limit=2,  # chỉ ảnh hưởng checkpoint "mới nhất"; best-K lưu riêng
+        save_total_limit=2,
 
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
@@ -191,9 +220,10 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
 
     best_cb = SaveBestKByEvalLossCallback(
         best_dir=os.path.join(cfg.output_dir, "best_checkpoints"),
-        k=3,  # giữ top-3 eval_loss thấp nhất (đổi tuỳ bạn)
+        k=3,
         tokenizer=tok,
     )
+    log_cb = MetricsFileLoggerCallback(output_dir=cfg.output_dir)
 
     trainer = Seq2SeqTrainer(
         model=model,
@@ -206,9 +236,9 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
             p,
             tokenizer=tok,
             bert_lang="vi",
-            bert_model_type="xlm-roberta-base",  # hoặc "vinai/phobert-base"
+            bert_model_type="xlm-roberta-base",
         ),
-        callbacks=[best_cb],
+        callbacks=[best_cb, log_cb],
     )
 
     trainer.train()
@@ -240,9 +270,9 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         learning_rate=cfg.lr,
         per_device_train_batch_size=cfg.batch_size,
         per_device_eval_batch_size=cfg.batch_size,
-        num_train_epochs=cfg.epochs,  # config đang là 2 epochs
+        num_train_epochs=cfg.epochs,
 
-        # ✅ theo yêu cầu giữ eval_strategy
+        # giữ eval_strategy theo yêu cầu
         eval_strategy="steps",
         eval_steps=100,
 
@@ -264,6 +294,7 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         k=3,
         tokenizer=tok,
     )
+    log_cb = MetricsFileLoggerCallback(output_dir=cfg.output_dir)
 
     trainer = Trainer(
         model=model,
@@ -271,8 +302,8 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         train_dataset=ds_train,
         eval_dataset=ds_valid,
         tokenizer=tok,
-        callbacks=[best_cb],
-        # AE: chỉ eval_loss (không compute_metrics)
+        callbacks=[best_cb, log_cb],
+        # AE: chỉ eval_loss
     )
 
     trainer.train()
