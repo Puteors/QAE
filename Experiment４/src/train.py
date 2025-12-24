@@ -76,7 +76,7 @@ class SaveBestKByEvalLossCallback(TrainerCallback):
 
 
 # -------------------------
-# Callback: log metrics to file
+# Callback: log metrics to file (JSONL)
 # -------------------------
 class MetricsFileLoggerCallback(TrainerCallback):
     """
@@ -91,10 +91,10 @@ class MetricsFileLoggerCallback(TrainerCallback):
         self.filepath = os.path.join(output_dir, filename)
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # ghi header nhẹ (optional)
-        with open(self.filepath, "a", encoding="utf-8") as f:
-            if os.path.getsize(self.filepath) == 0:
-                f.write("")  # jsonl không cần header
+        # đảm bảo file tồn tại
+        if not os.path.exists(self.filepath):
+            with open(self.filepath, "w", encoding="utf-8") as f:
+                f.write("")
 
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         if not metrics:
@@ -105,7 +105,6 @@ class MetricsFileLoggerCallback(TrainerCallback):
             "global_step": int(state.global_step),
             "epoch": float(state.epoch) if state.epoch is not None else None,
         }
-        # merge all metrics
         for k, v in metrics.items():
             try:
                 record[k] = float(v)
@@ -122,6 +121,10 @@ class MetricsFileLoggerCallback(TrainerCallback):
 # LoRA helpers
 # -------------------------
 def _find_target_modules(model, candidates: List[List[str]]) -> List[str]:
+    """
+    Trả về list target_modules phù hợp với model (dò theo tên submodule).
+    Ưu tiên option mà tất cả modules đều tồn tại; nếu không thì lấy những cái match được.
+    """
     names = set(n for n, _ in model.named_modules())
 
     def exists_any(suffix: str) -> bool:
@@ -140,11 +143,14 @@ def _find_target_modules(model, candidates: List[List[str]]) -> List[str]:
 
 
 def apply_lora(model, task_type: TaskType):
+    """
+    Apply LoRA với target_modules phù hợp theo kiến trúc.
+    """
     candidates = [
-        ["q_proj", "k_proj", "v_proj", "out_proj"],
-        ["q_proj", "v_proj"],
-        ["query", "key", "value"],
-        ["query_proj", "key_proj", "value_proj", "dense"],
+        ["q_proj", "k_proj", "v_proj", "out_proj"],        # BART/mBART
+        ["q_proj", "v_proj"],                              # fallback
+        ["query", "key", "value"],                         # BERT-like
+        ["query_proj", "key_proj", "value_proj", "dense"], # một số kiến trúc khác
     ]
 
     target_modules = _find_target_modules(model, candidates)
@@ -200,7 +206,7 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
-        # giữ eval_strategy theo yêu cầu
+        # theo yêu cầu giữ eval_strategy
         eval_strategy="steps",
         eval_steps=100,
 
@@ -236,7 +242,7 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
             p,
             tokenizer=tok,
             bert_lang="vi",
-            bert_model_type="xlm-roberta-base",
+            bert_model_type="xlm-roberta-base",  # hoặc "vinai/phobert-base"
         ),
         callbacks=[best_cb, log_cb],
     )
@@ -250,11 +256,14 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
 # Train: AE (mDeBERTa extractive QA)
 # -------------------------
 def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
-    tok = AutoTokenizer.from_pretrained(cfg.model_name, use_fast=True)
+    # Nếu bạn đã cài protobuf thì dùng use_fast=True, nếu chưa thì dùng False
+    tok = AutoTokenizer.from_pretrained(cfg.model_name, use_fast=False)
     model = AutoModelForQuestionAnswering.from_pretrained(cfg.model_name)
 
     if cfg.use_peft:
-        model = apply_lora(model, TaskType.QUESTION_ANSWERING)
+        # ✅ Fix 2: nếu TaskType không có QUESTION_ANSWERING thì fallback TOKEN_CLS
+        qa_task = getattr(TaskType, "QUESTION_ANSWERING", TaskType.TOKEN_CLS)
+        model = apply_lora(model, qa_task)
 
     train_examples = load_json(train_path)
     valid_examples = load_json(valid_path)
@@ -272,7 +281,7 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
-        # giữ eval_strategy theo yêu cầu
+        # theo yêu cầu giữ eval_strategy
         eval_strategy="steps",
         eval_steps=100,
 
