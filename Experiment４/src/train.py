@@ -29,17 +29,21 @@ from src.metrics import compute_rough_and_bertscore_from_eval_pred
 # Callback: save best-K checkpoints by eval_loss
 # -------------------------
 class SaveBestKByEvalLossCallback(TrainerCallback):
+    """
+    Lưu TOP-K checkpoint có eval_loss thấp nhất vào <output_dir>/best_checkpoints.
+    """
+
     def __init__(self, best_dir: str, k: int = 3, tokenizer=None):
         self.best_dir = best_dir
         self.k = k
         self.tokenizer = tokenizer
-        self.best: List[tuple[float, str]] = []
+        self.best: List[tuple[float, str]] = []  # (loss, path)
         os.makedirs(self.best_dir, exist_ok=True)
 
     def _prune(self):
         self.best.sort(key=lambda x: x[0])
         while len(self.best) > self.k:
-            loss, path = self.best.pop()
+            loss, path = self.best.pop()  # remove worst
             if os.path.isdir(path):
                 shutil.rmtree(path, ignore_errors=True)
 
@@ -64,6 +68,7 @@ class SaveBestKByEvalLossCallback(TrainerCallback):
             trainer.save_model(save_path)
             if self.tokenizer is not None:
                 self.tokenizer.save_pretrained(save_path)
+
             self.best.append((loss, save_path))
             self._prune()
 
@@ -71,9 +76,15 @@ class SaveBestKByEvalLossCallback(TrainerCallback):
 
 
 # -------------------------
-# Callback: log metrics
+# Callback: log metrics to file (JSONL)
 # -------------------------
 class MetricsFileLoggerCallback(TrainerCallback):
+    """
+    Ghi metrics trong quá trình train vào file JSONL.
+    Mỗi lần evaluate append 1 dòng JSON.
+    File: <output_dir>/metrics_log.jsonl
+    """
+
     def __init__(self, output_dir: str, filename: str = "metrics_log.jsonl"):
         self.output_dir = output_dir
         self.filepath = os.path.join(output_dir, filename)
@@ -107,6 +118,10 @@ class MetricsFileLoggerCallback(TrainerCallback):
 # LoRA helpers
 # -------------------------
 def _find_target_modules(model, candidates: List[List[str]]) -> List[str]:
+    """
+    Trả về list target_modules phù hợp với model (dò theo tên submodule).
+    Ưu tiên option mà tất cả modules đều tồn tại; nếu không thì lấy những cái match được.
+    """
     names = set(n for n, _ in model.named_modules())
 
     def exists_any(suffix: str) -> bool:
@@ -125,16 +140,22 @@ def _find_target_modules(model, candidates: List[List[str]]) -> List[str]:
 
 
 def apply_lora(model, task_type: TaskType):
+    """
+    Apply LoRA với target_modules phù hợp theo kiến trúc.
+    """
     candidates = [
-        ["q_proj", "k_proj", "v_proj", "out_proj"],
-        ["q_proj", "v_proj"],
-        ["query", "key", "value"],
-        ["query_proj", "key_proj", "value_proj", "dense"],
+        ["q_proj", "k_proj", "v_proj", "out_proj"],        # BART/mBART
+        ["q_proj", "v_proj"],                              # fallback
+        ["query", "key", "value"],                         # BERT-like
+        ["query_proj", "key_proj", "value_proj", "dense"], # một số kiến trúc khác
     ]
 
     target_modules = _find_target_modules(model, candidates)
     if not target_modules:
-        raise ValueError("Không tìm thấy target_modules phù hợp để gắn LoRA.")
+        raise ValueError(
+            "Không tìm thấy target_modules phù hợp để gắn LoRA. "
+            "Hãy kiểm tra tên modules trong model.named_modules()."
+        )
 
     lora = LoraConfig(
         r=8,
@@ -182,6 +203,7 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
+        # ✅ giữ eval_strategy theo yêu cầu
         eval_strategy="steps",
         eval_steps=100,
 
@@ -256,6 +278,7 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
+        # ✅ giữ eval_strategy theo yêu cầu
         eval_strategy="steps",
         eval_steps=100,
 
@@ -286,9 +309,8 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         eval_dataset=ds_valid,
         tokenizer=tok,
         callbacks=[best_cb, log_cb],
-
-        # ✅ QUAN TRỌNG: để Trainer truyền đúng vào model.forward()
-        label_names=["start_positions", "end_positions"],
+        # ✅ Transformers version cũ: KHÔNG dùng label_names
+        # Dataset phải có start_positions và end_positions (không có labels)
     )
 
     trainer.train()
