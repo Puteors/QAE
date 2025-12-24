@@ -14,7 +14,7 @@ class QAConfig:
 
 @dataclass
 class AEConfig:
-    model_name: str = "microsoft/mdeberta-v3-base"
+    model_name: str = "xlm-roberta-base"
     max_len: int = 384
     doc_stride: int = 128
     lr: float = 2e-5
