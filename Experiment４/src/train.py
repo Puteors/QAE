@@ -19,74 +19,76 @@ from transformers import (
     TrainerCallback,
 )
 
-from transformers.data.data_collator import default_data_collator
-
 from peft import LoraConfig, get_peft_model, TaskType
 from src.config import QAConfig, AEConfig
 from src.dataset import load_json, qa_gen_example, ae_tokenize_and_align
 from src.metrics import compute_rough_and_bertscore_from_eval_pred
 
-import src.dataset
-print("[DEBUG] dataset.py loaded from:", src.dataset.__file__)
 
-
-# -------------------------
-# Collator: remove labels if exists (anti-crash)
-# -------------------------
-class RemoveLabelsCollator:
-    def __call__(self, features):
-        for f in features:
-            f.pop("labels", None)
-        return default_data_collator(features)
-
-
-# -------------------------
-# Callback: save best-K checkpoints by eval_loss
-# -------------------------
+# =========================================================
+# Callback: Save best-K checkpoints by eval_loss
+# =========================================================
 class SaveBestKByEvalLossCallback(TrainerCallback):
+    """
+    Lưu TOP-K checkpoint có eval_loss thấp nhất vào <output_dir>/best_checkpoints.
+    Không phụ thuộc save_total_limit (vì save_total_limit thường giữ theo "mới nhất").
+    """
+
     def __init__(self, best_dir: str, k: int = 3, tokenizer=None):
         self.best_dir = best_dir
         self.k = k
         self.tokenizer = tokenizer
-        self.best: List[tuple[float, str]] = []
+        self.best: List[tuple[float, str]] = []  # (loss, path)
         os.makedirs(self.best_dir, exist_ok=True)
 
     def _prune(self):
+        # Giữ K loss nhỏ nhất
         self.best.sort(key=lambda x: x[0])
         while len(self.best) > self.k:
-            loss, path = self.best.pop()
+            loss, path = self.best.pop()  # remove worst
             if os.path.isdir(path):
                 shutil.rmtree(path, ignore_errors=True)
 
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         if not metrics:
             return control
+
         loss = metrics.get("eval_loss", None)
         if loss is None:
             return control
+
         trainer = kwargs.get("trainer", None)
         if trainer is None:
+            # một số version không truyền trainer -> không lưu
             return control
 
         loss = float(loss)
         step = int(state.global_step)
         save_path = os.path.join(self.best_dir, f"step-{step}_loss-{loss:.4f}")
 
+        # Chỉ lưu nếu thuộc top-K tốt nhất
         should_save = (len(self.best) < self.k) or (loss < max(x[0] for x in self.best))
         if should_save:
             trainer.save_model(save_path)
             if self.tokenizer is not None:
                 self.tokenizer.save_pretrained(save_path)
+
             self.best.append((loss, save_path))
             self._prune()
 
         return control
 
 
-# -------------------------
-# Callback: log metrics to file (JSONL)
-# -------------------------
+# =========================================================
+# Callback: Log metrics to JSONL file
+# =========================================================
 class MetricsFileLoggerCallback(TrainerCallback):
+    """
+    Ghi metrics trong quá trình train vào file JSONL.
+    Mỗi lần evaluate append 1 dòng JSON.
+    File: <output_dir>/metrics_log.jsonl
+    """
+
     def __init__(self, output_dir: str, filename: str = "metrics_log.jsonl"):
         self.output_dir = output_dir
         self.filepath = os.path.join(output_dir, filename)
@@ -116,19 +118,25 @@ class MetricsFileLoggerCallback(TrainerCallback):
         return control
 
 
-# -------------------------
+# =========================================================
 # LoRA helpers
-# -------------------------
+# =========================================================
 def _find_target_modules(model, candidates: List[List[str]]) -> List[str]:
+    """
+    Trả về list target_modules phù hợp với model (dò theo tên submodule).
+    Ưu tiên option mà tất cả modules đều tồn tại; nếu không thì lấy những cái match được.
+    """
     names = set(n for n, _ in model.named_modules())
 
     def exists_any(suffix: str) -> bool:
         return any(n == suffix or n.endswith("." + suffix) for n in names)
 
+    # Ưu tiên option match đủ
     for option in candidates:
         if all(exists_any(m) for m in option):
             return option
 
+    # Fallback: lấy option có ít nhất 1 match
     for option in candidates:
         matched = [m for m in option if exists_any(m)]
         if matched:
@@ -138,16 +146,22 @@ def _find_target_modules(model, candidates: List[List[str]]) -> List[str]:
 
 
 def apply_lora(model, task_type: TaskType):
+    """
+    Apply LoRA với target_modules phù hợp theo kiến trúc.
+    """
     candidates = [
-        ["q_proj", "k_proj", "v_proj", "out_proj"],
-        ["q_proj", "v_proj"],
-        ["query", "key", "value"],
-        ["query_proj", "key_proj", "value_proj", "dense"],
+        ["q_proj", "k_proj", "v_proj", "out_proj"],        # BART/mBART
+        ["q_proj", "v_proj"],                              # fallback
+        ["query", "key", "value"],                         # BERT-like
+        ["query_proj", "key_proj", "value_proj", "dense"], # một số kiến trúc khác
     ]
 
     target_modules = _find_target_modules(model, candidates)
     if not target_modules:
-        raise ValueError("Không tìm thấy target_modules phù hợp để gắn LoRA.")
+        raise ValueError(
+            "Không tìm thấy target_modules phù hợp để gắn LoRA. "
+            "Hãy kiểm tra tên modules trong model.named_modules()."
+        )
 
     lora = LoraConfig(
         r=8,
@@ -161,9 +175,39 @@ def apply_lora(model, task_type: TaskType):
     return get_peft_model(model, lora)
 
 
-# -------------------------
+# =========================================================
+# AE Trainer đúng chuẩn: override compute_loss
+# =========================================================
+class ExtractiveQATrainer(Trainer):
+    """
+    Trainer chuẩn cho Extractive QA (mDeBERTa / XLM-R / PhoBERT...):
+    - CHỈ forward những keys hợp lệ cho QA: input_ids, attention_mask, token_type_ids, start_positions, end_positions
+    - Loại bỏ mọi key dư như labels => không còn lỗi unexpected keyword labels
+    """
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        qa_inputs = {
+            "input_ids": inputs["input_ids"],
+        }
+
+        if "attention_mask" in inputs and inputs["attention_mask"] is not None:
+            qa_inputs["attention_mask"] = inputs["attention_mask"]
+
+        if "token_type_ids" in inputs and inputs["token_type_ids"] is not None:
+            qa_inputs["token_type_ids"] = inputs["token_type_ids"]
+
+        # Labels chuẩn của extractive QA
+        qa_inputs["start_positions"] = inputs["start_positions"]
+        qa_inputs["end_positions"] = inputs["end_positions"]
+
+        outputs = model(**qa_inputs)
+        loss = outputs.loss
+        return (loss, outputs) if return_outputs else loss
+
+
+# =========================================================
 # Train: QA (BartPho seq2seq)
-# -------------------------
+# =========================================================
 def train_bartpho(train_path, valid_path, cfg: QAConfig):
     tok = AutoTokenizer.from_pretrained(cfg.model_name)
     model = AutoModelForSeq2SeqLM.from_pretrained(cfg.model_name)
@@ -193,14 +237,15 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         learning_rate=cfg.lr,
         per_device_train_batch_size=cfg.batch_size,
         per_device_eval_batch_size=cfg.batch_size,
-        num_train_epochs=cfg.epochs,
+        num_train_epochs=cfg.epochs,  # config = 2
 
+        # ✅ giữ eval_strategy
         eval_strategy="steps",
         eval_steps=100,
 
         save_strategy="steps",
         save_steps=100,
-        save_total_limit=2,
+        save_total_limit=2,  # checkpoint "mới nhất" (best-K lưu riêng)
 
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
@@ -240,14 +285,16 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
     tok.save_pretrained(cfg.output_dir)
 
 
-# -------------------------
+# =========================================================
 # Train: AE (Extractive QA)
-# -------------------------
+# =========================================================
 def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
+    # ✅ AE cần fast tokenizer vì return_offset_mapping
     tok = AutoTokenizer.from_pretrained(cfg.model_name, use_fast=True)
     model = AutoModelForQuestionAnswering.from_pretrained(cfg.model_name)
 
     if cfg.use_peft:
+        # ✅ Fix 2: fallback nếu PEFT không có QUESTION_ANSWERING
         qa_task = getattr(TaskType, "QUESTION_ANSWERING", TaskType.TOKEN_CLS)
         model = apply_lora(model, qa_task)
 
@@ -257,9 +304,12 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
     train_feats = ae_tokenize_and_align(tok, train_examples, cfg.max_len, cfg.doc_stride)
     valid_feats = ae_tokenize_and_align(tok, valid_examples, cfg.max_len, cfg.doc_stride)
 
-    # ✅ debug keys
+    # ✅ check feature keys để chắc chắn không có labels
     if len(train_feats) > 0:
-        print("[DEBUG] AE feature keys:", list(train_feats[0].keys()))
+        keys = list(train_feats[0].keys())
+        print("[DEBUG] AE feature keys:", keys)
+        if "labels" in keys:
+            raise ValueError("AE features chứa 'labels' -> hãy sửa dataset.py để không tạo labels.")
 
     ds_train = Dataset.from_list(train_feats)
     ds_valid = Dataset.from_list(valid_feats)
@@ -269,8 +319,9 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         learning_rate=cfg.lr,
         per_device_train_batch_size=cfg.batch_size,
         per_device_eval_batch_size=cfg.batch_size,
-        num_train_epochs=cfg.epochs,
+        num_train_epochs=cfg.epochs,  # config = 2
 
+        # ✅ giữ eval_strategy
         eval_strategy="steps",
         eval_steps=100,
 
@@ -294,13 +345,13 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
     )
     log_cb = MetricsFileLoggerCallback(output_dir=cfg.output_dir)
 
-    trainer = Trainer(
+    # ✅ Dùng ExtractiveQATrainer thay vì Trainer để forward đúng keys
+    trainer = ExtractiveQATrainer(
         model=model,
         args=args,
         train_dataset=ds_train,
         eval_dataset=ds_valid,
         tokenizer=tok,
-        data_collator=RemoveLabelsCollator(),  # ✅ CHỐT: không bao giờ forward labels
         callbacks=[best_cb, log_cb],
     )
 
@@ -309,6 +360,9 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
     tok.save_pretrained(cfg.output_dir)
 
 
+# =========================================================
+# Main
+# =========================================================
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", choices=["qa", "ae"], required=True)
