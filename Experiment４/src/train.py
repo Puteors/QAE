@@ -257,11 +257,10 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
 # -------------------------
 def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
     # Nếu bạn đã cài protobuf thì dùng use_fast=True, nếu chưa thì dùng False
-    tok = AutoTokenizer.from_pretrained(cfg.model_name, use_fast=False)
+    tok = AutoTokenizer.from_pretrained(cfg.model_name, use_fast=True)
     model = AutoModelForQuestionAnswering.from_pretrained(cfg.model_name)
 
     if cfg.use_peft:
-        # ✅ Fix 2: nếu TaskType không có QUESTION_ANSWERING thì fallback TOKEN_CLS
         qa_task = getattr(TaskType, "QUESTION_ANSWERING", TaskType.TOKEN_CLS)
         model = apply_lora(model, qa_task)
 
