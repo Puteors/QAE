@@ -29,21 +29,17 @@ from src.metrics import compute_rough_and_bertscore_from_eval_pred
 # Callback: save best-K checkpoints by eval_loss
 # -------------------------
 class SaveBestKByEvalLossCallback(TrainerCallback):
-    """
-    Lưu TOP-K checkpoint có eval_loss thấp nhất vào <output_dir>/best_checkpoints.
-    """
-
     def __init__(self, best_dir: str, k: int = 3, tokenizer=None):
         self.best_dir = best_dir
         self.k = k
         self.tokenizer = tokenizer
-        self.best: List[tuple[float, str]] = []  # (loss, path)
+        self.best: List[tuple[float, str]] = []
         os.makedirs(self.best_dir, exist_ok=True)
 
     def _prune(self):
         self.best.sort(key=lambda x: x[0])
         while len(self.best) > self.k:
-            loss, path = self.best.pop()  # remove worst
+            loss, path = self.best.pop()
             if os.path.isdir(path):
                 shutil.rmtree(path, ignore_errors=True)
 
@@ -68,7 +64,6 @@ class SaveBestKByEvalLossCallback(TrainerCallback):
             trainer.save_model(save_path)
             if self.tokenizer is not None:
                 self.tokenizer.save_pretrained(save_path)
-
             self.best.append((loss, save_path))
             self._prune()
 
@@ -76,22 +71,13 @@ class SaveBestKByEvalLossCallback(TrainerCallback):
 
 
 # -------------------------
-# Callback: log metrics to file (JSONL)
+# Callback: log metrics
 # -------------------------
 class MetricsFileLoggerCallback(TrainerCallback):
-    """
-    Ghi metrics trong quá trình train vào file JSONL.
-    Mỗi lần evaluate sẽ append 1 dòng JSON.
-
-    File: <output_dir>/metrics_log.jsonl
-    """
-
     def __init__(self, output_dir: str, filename: str = "metrics_log.jsonl"):
         self.output_dir = output_dir
         self.filepath = os.path.join(output_dir, filename)
         os.makedirs(self.output_dir, exist_ok=True)
-
-        # đảm bảo file tồn tại
         if not os.path.exists(self.filepath):
             with open(self.filepath, "w", encoding="utf-8") as f:
                 f.write("")
@@ -121,10 +107,6 @@ class MetricsFileLoggerCallback(TrainerCallback):
 # LoRA helpers
 # -------------------------
 def _find_target_modules(model, candidates: List[List[str]]) -> List[str]:
-    """
-    Trả về list target_modules phù hợp với model (dò theo tên submodule).
-    Ưu tiên option mà tất cả modules đều tồn tại; nếu không thì lấy những cái match được.
-    """
     names = set(n for n, _ in model.named_modules())
 
     def exists_any(suffix: str) -> bool:
@@ -143,22 +125,16 @@ def _find_target_modules(model, candidates: List[List[str]]) -> List[str]:
 
 
 def apply_lora(model, task_type: TaskType):
-    """
-    Apply LoRA với target_modules phù hợp theo kiến trúc.
-    """
     candidates = [
-        ["q_proj", "k_proj", "v_proj", "out_proj"],        # BART/mBART
-        ["q_proj", "v_proj"],                              # fallback
-        ["query", "key", "value"],                         # BERT-like
-        ["query_proj", "key_proj", "value_proj", "dense"], # một số kiến trúc khác
+        ["q_proj", "k_proj", "v_proj", "out_proj"],
+        ["q_proj", "v_proj"],
+        ["query", "key", "value"],
+        ["query_proj", "key_proj", "value_proj", "dense"],
     ]
 
     target_modules = _find_target_modules(model, candidates)
     if not target_modules:
-        raise ValueError(
-            "Không tìm thấy target_modules phù hợp để gắn LoRA. "
-            "Hãy kiểm tra tên modules trong model.named_modules()."
-        )
+        raise ValueError("Không tìm thấy target_modules phù hợp để gắn LoRA.")
 
     lora = LoraConfig(
         r=8,
@@ -206,7 +182,6 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
-        # theo yêu cầu giữ eval_strategy
         eval_strategy="steps",
         eval_steps=100,
 
@@ -242,7 +217,7 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
             p,
             tokenizer=tok,
             bert_lang="vi",
-            bert_model_type="xlm-roberta-base",  # hoặc "vinai/phobert-base"
+            bert_model_type="xlm-roberta-base",
         ),
         callbacks=[best_cb, log_cb],
     )
@@ -256,11 +231,12 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
 # Train: AE (mDeBERTa extractive QA)
 # -------------------------
 def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
-    # Nếu bạn đã cài protobuf thì dùng use_fast=True, nếu chưa thì dùng False
+    # ✅ AE bắt buộc fast tokenizer vì cần return_offset_mapping
     tok = AutoTokenizer.from_pretrained(cfg.model_name, use_fast=True)
     model = AutoModelForQuestionAnswering.from_pretrained(cfg.model_name)
 
     if cfg.use_peft:
+        # ✅ Fix 2: fallback nếu PEFT không có QUESTION_ANSWERING
         qa_task = getattr(TaskType, "QUESTION_ANSWERING", TaskType.TOKEN_CLS)
         model = apply_lora(model, qa_task)
 
@@ -280,7 +256,6 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
-        # theo yêu cầu giữ eval_strategy
         eval_strategy="steps",
         eval_steps=100,
 
@@ -311,7 +286,9 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         eval_dataset=ds_valid,
         tokenizer=tok,
         callbacks=[best_cb, log_cb],
-        # AE: chỉ eval_loss
+
+        # ✅ QUAN TRỌNG: để Trainer truyền đúng vào model.forward()
+        label_names=["start_positions", "end_positions"],
     )
 
     trainer.train()
