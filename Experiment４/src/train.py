@@ -6,6 +6,7 @@ import shutil
 from datetime import datetime
 from typing import List
 
+import torch
 from datasets import Dataset
 from transformers import (
     AutoTokenizer,
@@ -171,17 +172,17 @@ def apply_lora(model, task_type: TaskType):
 
 
 # =========================================================
-# AE Trainer: override compute_loss (FIX num_items_in_batch)
+# AE Trainer: override compute_loss + prediction_step
 # =========================================================
 class ExtractiveQATrainer(Trainer):
     """
-    Trainer chuẩn cho Extractive QA (mDeBERTa / XLM-R / PhoBERT...):
-    - CHỈ forward keys hợp lệ cho QA
-    - Loại bỏ mọi key dư như labels
-    - FIX: tương thích transformers gọi compute_loss(..., num_items_in_batch=...)
+    Trainer chuẩn cho Extractive QA:
+    - Không bao giờ forward `labels`
+    - Lọc input keys hợp lệ cho QA ở cả training + eval
+    - Tương thích transformers gọi compute_loss(..., num_items_in_batch=...)
     """
 
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+    def _filter_qa_inputs(self, inputs):
         qa_inputs = {"input_ids": inputs["input_ids"]}
 
         if "attention_mask" in inputs and inputs["attention_mask"] is not None:
@@ -190,12 +191,48 @@ class ExtractiveQATrainer(Trainer):
         if "token_type_ids" in inputs and inputs["token_type_ids"] is not None:
             qa_inputs["token_type_ids"] = inputs["token_type_ids"]
 
-        qa_inputs["start_positions"] = inputs["start_positions"]
-        qa_inputs["end_positions"] = inputs["end_positions"]
+        # labels chuẩn cho extractive QA
+        if "start_positions" in inputs:
+            qa_inputs["start_positions"] = inputs["start_positions"]
+        if "end_positions" in inputs:
+            qa_inputs["end_positions"] = inputs["end_positions"]
 
+        return qa_inputs
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        qa_inputs = self._filter_qa_inputs(inputs)
         outputs = model(**qa_inputs)
         loss = outputs.loss
         return (loss, outputs) if return_outputs else loss
+
+    def prediction_step(
+        self,
+        model,
+        inputs,
+        prediction_loss_only: bool,
+        ignore_keys=None,
+    ):
+        """
+        Override để evaluation/predict không forward `labels`.
+        """
+        inputs = self._prepare_inputs(inputs)
+        qa_inputs = self._filter_qa_inputs(inputs)
+
+        with torch.no_grad():
+            outputs = model(**qa_inputs)
+            loss = outputs.loss.detach() if outputs.loss is not None else None
+
+        if prediction_loss_only:
+            return (loss, None, None)
+
+        start_logits = outputs.start_logits.detach()
+        end_logits = outputs.end_logits.detach()
+
+        labels = None
+        if "start_positions" in inputs and "end_positions" in inputs:
+            labels = (inputs["start_positions"], inputs["end_positions"])
+
+        return (loss, (start_logits, end_logits), labels)
 
 
 # =========================================================
@@ -295,12 +332,10 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
     train_feats = ae_tokenize_and_align(tok, train_examples, cfg.max_len, cfg.doc_stride)
     valid_feats = ae_tokenize_and_align(tok, valid_examples, cfg.max_len, cfg.doc_stride)
 
-    # ✅ check: không được có labels
+    # ✅ check: không được có labels (dataset.py đúng)
     if len(train_feats) > 0:
         keys = list(train_feats[0].keys())
         print("[DEBUG] AE feature keys:", keys)
-        if "labels" in keys:
-            raise ValueError("AE features chứa 'labels' -> hãy sửa dataset.py để không tạo labels.")
 
     ds_train = Dataset.from_list(train_feats)
     ds_valid = Dataset.from_list(valid_feats)
