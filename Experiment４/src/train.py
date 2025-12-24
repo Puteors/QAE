@@ -127,10 +127,12 @@ def _find_target_modules(model, candidates: List[List[str]]) -> List[str]:
     def exists_any(suffix: str) -> bool:
         return any(n == suffix or n.endswith("." + suffix) for n in names)
 
+    # Ưu tiên option match đủ
     for option in candidates:
         if all(exists_any(m) for m in option):
             return option
 
+    # fallback: lấy option có ít nhất 1 match
     for option in candidates:
         matched = [m for m in option if exists_any(m)]
         if matched:
@@ -203,7 +205,7 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
-        # ✅ giữ eval_strategy theo yêu cầu
+        # ✅ giữ eval_strategy
         eval_strategy="steps",
         eval_steps=100,
 
@@ -268,6 +270,16 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
     train_feats = ae_tokenize_and_align(tok, train_examples, cfg.max_len, cfg.doc_stride)
     valid_feats = ae_tokenize_and_align(tok, valid_examples, cfg.max_len, cfg.doc_stride)
 
+    # ✅ FIX TRIỆT ĐỂ: xoá labels nếu còn sót lại
+    for f in train_feats:
+        f.pop("labels", None)
+    for f in valid_feats:
+        f.pop("labels", None)
+
+    # ✅ debug: in ra keys của feature để chắc chắn không còn labels
+    if len(train_feats) > 0:
+        print("AE feature keys:", list(train_feats[0].keys()))
+
     ds_train = Dataset.from_list(train_feats)
     ds_valid = Dataset.from_list(valid_feats)
 
@@ -278,7 +290,7 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         per_device_eval_batch_size=cfg.batch_size,
         num_train_epochs=cfg.epochs,
 
-        # ✅ giữ eval_strategy theo yêu cầu
+        # ✅ giữ eval_strategy
         eval_strategy="steps",
         eval_steps=100,
 
@@ -309,8 +321,6 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         eval_dataset=ds_valid,
         tokenizer=tok,
         callbacks=[best_cb, log_cb],
-        # ✅ Transformers version cũ: KHÔNG dùng label_names
-        # Dataset phải có start_positions và end_positions (không có labels)
     )
 
     trainer.train()
