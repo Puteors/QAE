@@ -2,10 +2,10 @@
 my_eraavaluate.py
 
 Đánh giá "rough" (EM + token-F1) và BERTScore cho 2 mô hình:
-- Generative QA: vinai/bartpho-syllable (Seq2Seq)  -> dùng inference.predict_bartpho
-- Extractive QA: microsoft/mdeberta-v3-base (QA)   -> dùng inference.predict_mdeberta_ae
+- Question Generation: vinai/bartpho-syllable (Seq2Seq) -> dùng inference.predict_bartpho / predict_qg_with_ae
+- Extractive QA: microsoft/mdeberta-v3-base (QA)        -> dùng inference.predict_mdeberta_ae
 
-Yêu cầu: input_json phải có GOLD (answers.text[0]) thì mới tính được metric.
+Yêu cầu: input_json phải có GOLD (question hoặc answers.text[0]) thì mới tính được metric.
 Ngôn ngữ: tiếng Việt (lang='vi' cho BERTScore).
 """
 
@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Tuple
 
 import evaluate
 
-from inference import predict_bartpho, predict_mdeberta_ae
+from inference import predict_bartpho, predict_mdeberta_ae, predict_qg_with_ae
 
 
 # -------------------------
@@ -35,6 +35,14 @@ def save_json(path: str, data: Any) -> None:
 
 
 def safe_gold(ex: Dict[str, Any]) -> str:
+    gold = ex.get("gold")
+    if gold is not None:
+        return str(gold).strip()
+
+    question = ex.get("question")
+    if question is not None:
+        return str(question).strip()
+
     ans = ex.get("answers") or {}
     texts = ans.get("text") or []
     if isinstance(texts, list) and len(texts) > 0 and texts[0] is not None:
@@ -149,8 +157,20 @@ def run_inference(
     num_beams: int = 4,
     max_len: int = 384,
     max_answer_len: int = 40,
+    ae_model_dir: str = "",
 ) -> List[Dict[str, Any]]:
     if task == "qa":
+        if ae_model_dir:
+            return predict_qg_with_ae(
+                ae_model_dir=ae_model_dir,
+                qg_model_dir=model_dir,
+                items=items,
+                max_source_len=max_source_len,
+                max_new_tokens=max_new_tokens,
+                num_beams=num_beams,
+                max_len=max_len,
+                max_answer_len=max_answer_len,
+            )
         return predict_bartpho(
             model_dir=model_dir,
             items=items,
@@ -187,10 +207,16 @@ def evaluate_outputs(
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", choices=["qa", "ae"], required=True, help="qa=BARTpho gen, ae=mDeBERTa extractive")
+    ap.add_argument(
+        "--task",
+        choices=["qa", "ae"],
+        required=True,
+        help="qa=BARTpho question generation, ae=mDeBERTa extractive",
+    )
 
     # model dirs (đã train hoặc pretrained đã fine-tune và save_pretrained)
     ap.add_argument("--model_dir", required=True)
+    ap.add_argument("--ae_model_dir", default="", help="Optional AE model for answer extraction before QG")
 
     # data
     ap.add_argument("--input_json", default="data/validation.json", help="Nên dùng validation có answers để chấm điểm")
@@ -228,6 +254,7 @@ def main():
         num_beams=args.num_beams,
         max_len=args.max_len,
         max_answer_len=args.max_answer_len,
+        ae_model_dir=args.ae_model_dir,
     )
 
     if args.save_preds:

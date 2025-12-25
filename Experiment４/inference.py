@@ -12,11 +12,28 @@ from transformers import (
 )
 
 def safe_gold(ex: Dict[str, Any]) -> str:
+    answer = ex.get("answer")
+    if answer is not None:
+        return str(answer).strip()
+
     ans = ex.get("answers") or {}
     texts = ans.get("text") or []
     if isinstance(texts, list) and len(texts) > 0 and texts[0] is not None:
         return str(texts[0]).strip()
+
+    plausible = ex.get("plausible_answers") or {}
+    texts = plausible.get("text") or []
+    if isinstance(texts, list) and len(texts) > 0 and texts[0] is not None:
+        return str(texts[0]).strip()
     return ""
+
+
+def safe_question(ex: Dict[str, Any]) -> str:
+    return str(ex.get("question") or "").strip()
+
+
+def build_qg_source(answer: str, context: str) -> str:
+    return f"Answer: {answer}\nContext: {context}"
 
 
 def load_json(path: str) -> List[Dict[str, Any]]:
@@ -42,9 +59,10 @@ def predict_bartpho(
 
     outputs: List[Dict[str, Any]] = []
     for ex in tqdm(items, desc="BARTpho inference", unit="sample"):
-        q = ex["question"].strip()
-        c = ex["context"].strip()
-        source = f"Câu hỏi: {q}\nNgữ cảnh: {c}"
+        answer = safe_gold(ex)
+        context = (ex.get("context") or "").strip()
+        question = safe_question(ex)
+        source = build_qg_source(answer, context)
 
         enc = tok(
             source,
@@ -64,9 +82,10 @@ def predict_bartpho(
         outputs.append({
             "id": ex.get("id"),
             "uit_id": ex.get("uit_id"),
-            "question": ex.get("question"),
+            "question": question,
+            "answer": answer,
             "pred": pred,
-            "gold": safe_gold(ex),
+            "gold": question,
         })
     return outputs
 
@@ -106,8 +125,8 @@ def predict_mdeberta_ae(
 
     outputs: List[Dict[str, Any]] = []
     for ex in tqdm(items, desc="mDeBERTa AE inference", unit="sample"):
-        question = ex["question"].strip()
-        context = ex["context"]
+        question = (ex.get("question") or "").strip()
+        context = ex.get("context") or ""
 
         enc = tok(
             question,
@@ -140,10 +159,52 @@ def predict_mdeberta_ae(
         })
     return outputs
 
+
+@torch.inference_mode()
+def predict_qg_with_ae(
+    ae_model_dir: str,
+    qg_model_dir: str,
+    items: List[Dict[str, Any]],
+    max_source_len: int = 512,
+    max_new_tokens: int = 64,
+    num_beams: int = 4,
+    max_len: int = 384,
+    max_answer_len: int = 40,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+) -> List[Dict[str, Any]]:
+    ae_outputs = predict_mdeberta_ae(
+        model_dir=ae_model_dir,
+        items=items,
+        max_len=max_len,
+        max_answer_len=max_answer_len,
+        device=device,
+    )
+
+    items_with_answer: List[Dict[str, Any]] = []
+    for ex, ae_out in zip(items, ae_outputs):
+        ex_copy = dict(ex)
+        ex_copy["answer"] = ae_out.get("pred", "")
+        items_with_answer.append(ex_copy)
+
+    return predict_bartpho(
+        model_dir=qg_model_dir,
+        items=items_with_answer,
+        max_source_len=max_source_len,
+        max_new_tokens=max_new_tokens,
+        num_beams=num_beams,
+        device=device,
+    )
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", choices=["qa", "ae"], required=True, help="qa=BARTpho gen, ae=mDeBERTa extractive")
+    ap.add_argument(
+        "--task",
+        choices=["qa", "ae"],
+        required=True,
+        help="qa=BARTpho question generation, ae=mDeBERTa extractive answer",
+    )
     ap.add_argument("--model_dir", required=True)
+    ap.add_argument("--ae_model_dir", default="", help="Optional AE model for answer extraction before QG")
     ap.add_argument("--input_json", default="data/test.json")
     ap.add_argument("--output_json", default="outputs/preds.json")
 
@@ -158,13 +219,25 @@ def main():
 
     items = load_json(args.input_json)
     if args.task == "qa":
-        preds = predict_bartpho(
-            model_dir=args.model_dir,
-            items=items,
-            max_source_len=args.max_source_len,
-            max_new_tokens=args.max_new_tokens,
-            num_beams=args.num_beams,
-        )
+        if args.ae_model_dir:
+            preds = predict_qg_with_ae(
+                ae_model_dir=args.ae_model_dir,
+                qg_model_dir=args.model_dir,
+                items=items,
+                max_source_len=args.max_source_len,
+                max_new_tokens=args.max_new_tokens,
+                num_beams=args.num_beams,
+                max_len=args.max_len,
+                max_answer_len=args.max_answer_len,
+            )
+        else:
+            preds = predict_bartpho(
+                model_dir=args.model_dir,
+                items=items,
+                max_source_len=args.max_source_len,
+                max_new_tokens=args.max_new_tokens,
+                num_beams=args.num_beams,
+            )
     else:
         preds = predict_mdeberta_ae(
             model_dir=args.model_dir,

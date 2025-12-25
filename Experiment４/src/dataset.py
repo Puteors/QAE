@@ -1,6 +1,6 @@
 # src/dataset.py
 import json
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 
 def load_json(path: str) -> List[Dict[str, Any]]:
@@ -9,27 +9,45 @@ def load_json(path: str) -> List[Dict[str, Any]]:
 
 
 # -------------------------
-# QA generative (BartPho)
+# QG (BartPho): answer+context -> question
 # -------------------------
-def qa_gen_example(ex: Dict[str, Any]) -> Dict[str, str]:
-    """
-    seq2seq: source -> target
-    Input mong đợi:
-      - question
-      - context
-      - answers: {"text":[...]} (SQuAD style)
-    """
-    q = (ex.get("question") or "").strip()
-    c = (ex.get("context") or "").strip()
+def _extract_answer_text(ex: Dict[str, Any]) -> str:
+    answer = ex.get("answer")
+    if answer is not None:
+        return str(answer).strip()
 
-    answers = ex.get("answers", {}) or {}
-    ans = ""
+    answers = ex.get("answers") or {}
     if isinstance(answers, dict):
-        texts = answers.get("text", [])
-        if texts:
-            ans = (texts[0] or "").strip()
+        texts = answers.get("text") or []
+        if texts and texts[0] is not None:
+            return str(texts[0]).strip()
 
-    return {"source": f"Câu hỏi: {q}\nNgữ cảnh: {c}", "target": ans}
+    plausible = ex.get("plausible_answers") or {}
+    if isinstance(plausible, dict):
+        texts = plausible.get("text") or []
+        if texts and texts[0] is not None:
+            return str(texts[0]).strip()
+
+    return ""
+
+
+def qa_gen_example(ex: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """
+    seq2seq (question generation): source -> target
+    Expected input:
+      - context
+      - answers: {"text":[...]} (SQuAD style) or plausible_answers
+      - question (gold)
+    """
+    question = (ex.get("question") or "").strip()
+    context = (ex.get("context") or "").strip()
+    answer = _extract_answer_text(ex)
+
+    if not question or not context or not answer:
+        return None
+
+    source = f"Answer: {answer}\nContext: {context}"
+    return {"source": source, "target": question}
 
 
 # -------------------------

@@ -236,7 +236,7 @@ class ExtractiveQATrainer(Trainer):
 
 
 # =========================================================
-# Train: QA (BartPho seq2seq)
+# Train: QG (BartPho seq2seq)
 # =========================================================
 def train_bartpho(train_path, valid_path, cfg: QAConfig):
     tok = AutoTokenizer.from_pretrained(cfg.model_name)
@@ -245,8 +245,8 @@ def train_bartpho(train_path, valid_path, cfg: QAConfig):
     if cfg.use_peft:
         model = apply_lora(model, TaskType.SEQ_2_SEQ_LM)
 
-    train_data = [qa_gen_example(x) for x in load_json(train_path)]
-    valid_data = [qa_gen_example(x) for x in load_json(valid_path)]
+    train_data = [ex for ex in (qa_gen_example(x) for x in load_json(train_path)) if ex]
+    valid_data = [ex for ex in (qa_gen_example(x) for x in load_json(valid_path)) if ex]
 
     ds_train = Dataset.from_list(train_data)
     ds_valid = Dataset.from_list(valid_data)
