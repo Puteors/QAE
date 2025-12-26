@@ -183,21 +183,22 @@ class ExtractiveQATrainer(Trainer):
     """
 
     def _filter_qa_inputs(self, inputs):
-        qa_inputs = {"input_ids": inputs["input_ids"]}
+        if not isinstance(inputs, dict):
+            inputs = dict(inputs)
 
-        if "attention_mask" in inputs and inputs["attention_mask"] is not None:
-            qa_inputs["attention_mask"] = inputs["attention_mask"]
+        # Guard against unexpected "labels" key from collators or wrappers.
+        if "labels" in inputs:
+            inputs = dict(inputs)
+            inputs.pop("labels", None)
 
-        if "token_type_ids" in inputs and inputs["token_type_ids"] is not None:
-            qa_inputs["token_type_ids"] = inputs["token_type_ids"]
-
-        # labels chuẩn cho extractive QA
-        if "start_positions" in inputs:
-            qa_inputs["start_positions"] = inputs["start_positions"]
-        if "end_positions" in inputs:
-            qa_inputs["end_positions"] = inputs["end_positions"]
-
-        return qa_inputs
+        allowed = (
+            "input_ids",
+            "attention_mask",
+            "token_type_ids",
+            "start_positions",
+            "end_positions",
+        )
+        return {k: v for k, v in inputs.items() if k in allowed and v is not None}
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         qa_inputs = self._filter_qa_inputs(inputs)
