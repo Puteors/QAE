@@ -102,10 +102,47 @@ class MetricsFileLoggerCallback(TrainerCallback):
 
         record = {
             "time": datetime.now().isoformat(),
+            "event": "eval",
             "global_step": int(state.global_step),
             "epoch": float(state.epoch) if state.epoch is not None else None,
         }
         for k, v in metrics.items():
+            try:
+                record[k] = float(v)
+            except Exception:
+                record[k] = v
+
+        with open(self.filepath, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        # Print eval summary (including BERTScore) to console.
+        bs_keys = ("bertscore_p", "bertscore_r", "bertscore_f1")
+        if any(k in metrics for k in bs_keys):
+            parts = []
+            if "eval_loss" in metrics:
+                parts.append(f"eval_loss={metrics['eval_loss']:.4f}")
+            for k in bs_keys:
+                if k in metrics:
+                    parts.append(f"{k}={metrics[k]:.4f}")
+            print("[Eval]", " | ".join(parts))
+
+        return control
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if not logs:
+            return control
+
+        # Skip eval logs here to avoid duplication with on_evaluate.
+        if any(k.startswith("eval_") for k in logs.keys()):
+            return control
+
+        record = {
+            "time": datetime.now().isoformat(),
+            "event": "train",
+            "global_step": int(state.global_step),
+            "epoch": float(state.epoch) if state.epoch is not None else None,
+        }
+        for k, v in logs.items():
             try:
                 record[k] = float(v)
             except Exception:
