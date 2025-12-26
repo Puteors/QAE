@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import List
 
 import torch
+import numpy as np
 from datasets import Dataset
 from transformers import (
     AutoTokenizer,
@@ -23,7 +24,7 @@ from transformers import (
 from peft import LoraConfig, get_peft_model, TaskType
 from src.config import QAConfig, AEConfig
 from src.dataset import load_json, qa_gen_example, ae_tokenize_and_align
-from src.metrics import compute_rough_and_bertscore_from_eval_pred
+from src.metrics import compute_rough_and_bertscore_from_eval_pred, compute_rough_and_bertscore_from_text
 
 
 # =========================================================
@@ -228,12 +229,13 @@ class ExtractiveQATrainer(Trainer):
 
         start_logits = outputs.start_logits.detach()
         end_logits = outputs.end_logits.detach()
+        input_ids = qa_inputs["input_ids"].detach()
 
         labels = None
         if "start_positions" in inputs and "end_positions" in inputs:
             labels = (inputs["start_positions"], inputs["end_positions"])
 
-        return (loss, (start_logits, end_logits), labels)
+        return (loss, (start_logits, end_logits, input_ids), labels)
 
 
 # =========================================================
@@ -341,6 +343,51 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
     ds_train = Dataset.from_list(train_feats)
     ds_valid = Dataset.from_list(valid_feats)
 
+    def _best_span_from_logits(start_logits, end_logits, max_answer_len: int = 40):
+        best_score = -1e9
+        best_i, best_j = 0, 0
+        for i in range(len(start_logits)):
+            j_max = min(len(end_logits) - 1, i + max_answer_len)
+            for j in range(i, j_max + 1):
+                score = float(start_logits[i] + end_logits[j])
+                if score > best_score:
+                    best_score = score
+                    best_i, best_j = i, j
+        return best_i, best_j
+
+    def _decode_span(input_ids, start_idx: int, end_idx: int) -> str:
+        if start_idx < 0 or end_idx < 0 or start_idx >= len(input_ids):
+            return ""
+        if end_idx < start_idx:
+            end_idx = start_idx
+        end_idx = min(end_idx, len(input_ids) - 1)
+        span_ids = input_ids[start_idx : end_idx + 1]
+        return tok.decode(span_ids, skip_special_tokens=True).strip()
+
+    def compute_metrics_ae(eval_pred):
+        start_logits, end_logits, input_ids = eval_pred.predictions
+        start_positions, end_positions = eval_pred.label_ids
+
+        start_logits = np.array(start_logits)
+        end_logits = np.array(end_logits)
+        input_ids = np.array(input_ids)
+        start_positions = np.array(start_positions)
+        end_positions = np.array(end_positions)
+
+        preds_text = []
+        refs_text = []
+        for i in range(len(input_ids)):
+            s_pred, e_pred = _best_span_from_logits(start_logits[i], end_logits[i])
+            preds_text.append(_decode_span(input_ids[i], int(s_pred), int(e_pred)))
+            refs_text.append(_decode_span(input_ids[i], int(start_positions[i]), int(end_positions[i])))
+
+        return compute_rough_and_bertscore_from_text(
+            preds_text,
+            refs_text,
+            bert_lang="vi",
+            bert_model_type="xlm-roberta-base",
+        )
+
     args = TrainingArguments(
         output_dir=cfg.output_dir,
         learning_rate=cfg.lr,
@@ -378,6 +425,7 @@ def train_mdeberta_ae(train_path, valid_path, cfg: AEConfig):
         train_dataset=ds_train,
         eval_dataset=ds_valid,
         tokenizer=tok,
+        compute_metrics=compute_metrics_ae,
         callbacks=[best_cb, log_cb],
     )
 
