@@ -21,7 +21,7 @@ class AEConfig:
     batch_size: int = 8
     epochs: int = 2
     output_dir: str = "outputs/mdeberta_ae"
-    use_peft: bool = True
+    use_peft: bool = False
 
 @dataclass
 class EvalConfig:
